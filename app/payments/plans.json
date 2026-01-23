@@ -1,0 +1,577 @@
+{
+    "plans": [
+        {
+            "id": "launch",
+            "name": "Launch",
+            "price": 39,
+            "currency": "usd",
+            "interval": "month",
+            "features": [
+                "100 Content Credits/month",
+                "1 AI Chatbot",
+                "500K Characters Training Data (Rollover)",
+                "500 Messages/month",
+                "Basic Support"
+            ],
+            "limits": {
+                "blog_ideas_credits": 100,
+                "faq_credits": 100,
+                "blog_creation_credits": 200,
+                "chatbot_messages_credits": 500,
+                "chatbot_training_credits": 500000,
+                "chatbot_count": 1,
+                "white_label": false
+            },
+            "stripe_price_id_test": "price_1SosmIJMg4e29sHC7HYNQr4G",
+            "stripe_price_id_live": "price_launch_live_id",
+            "active": true
+        },
+        {
+            "id": "launch_yearly",
+            "name": "Launch (Yearly)",
+            "price": 421.20,
+            "currency": "usd",
+            "interval": "year",
+            "features": [
+                "100 Content Credits/month",
+                "1 AI Chatbot",
+                "500K Characters Training Data (Rollover)",
+                "500 Messages/month",
+                "Basic Support",
+                "Save 10% on Yearly Billing"
+            ],
+            "limits": {
+                "blog_ideas_credits": 100,
+                "faq_credits": 100,
+                "blog_creation_credits": 200,
+                "chatbot_messages_credits": 500,
+                "chatbot_training_credits": 500000,
+                "chatbot_count": 1,
+                "white_label": false
+            },
+            "stripe_price_id_test": "price_launch_yearly_test_id",
+            "stripe_price_id_live": "price_launch_yearly_live_id",
+            "active": true
+        },
+        {
+            "id": "launch_plus",
+            "name": "Launch+",
+            "price": 79,
+            "currency": "usd",
+            "interval": "month",
+            "features": [
+                "250 Content Credits/month",
+                "2 AI Chatbots",
+                "1M Characters Training Data (Rollover)",
+                "1,500 Messages/month",
+                "Standard Support"
+            ],
+            "limits": {
+                "blog_ideas_credits": 250,
+                "faq_credits": 250,
+                "blog_creation_credits": 500,
+                "chatbot_messages_credits": 1500,
+                "chatbot_training_credits": 1000000,
+                "chatbot_count": 2,
+                "white_label": false
+            },
+            "stripe_price_id_test": "price_1SosrbJMg4e29sHCGBc9Zp6g",
+            "stripe_price_id_live": "price_launch_plus_live_id",
+            "active": true
+        },
+        {
+            "id": "launch_plus_yearly",
+            "name": "Launch+ (Yearly)",
+            "price": 853.20,
+            "currency": "usd",
+            "interval": "year",
+            "features": [
+                "250 Content Credits/month",
+                "2 AI Chatbots",
+                "1M Characters Training Data (Rollover)",
+                "1,500 Messages/month",
+                "Standard Support",
+                "Save 10% on Yearly Billing"
+            ],
+            "limits": {
+                "blog_ideas_credits": 250,
+                "faq_credits": 250,
+                "blog_creation_credits": 500,
+                "chatbot_messages_credits": 1500,
+                "chatbot_training_credits": 1000000,
+                "chatbot_count": 2,
+                "white_label": false
+            },
+            "stripe_price_id_test": "price_launch_plus_yearly_test_id",
+            "stripe_price_id_live": "price_launch_plus_yearly_live_id",
+            "active": true
+        },
+        {
+            "id": "scale",
+            "name": "Scale",
+            "price": 149,
+            "currency": "usd",
+            "interval": "month",
+            "features": [
+                "500 Content Credits/month",
+                "3 AI Chatbots",
+                "2M Characters Training Data (Rollover)",
+                "3,000 Messages/month",
+                "Standard Support"
+            ],
+            "limits": {
+                "blog_ideas_credits": 500,
+                "faq_credits": 500,
+                "blog_creation_credits": 1000,
+                "chatbot_messages_credits": 3000,
+                "chatbot_training_credits": 2000000,
+                "chatbot_count": 3,
+                "white_label": false
+            },
+            "stripe_price_id_test": "price_1SostMJMg4e29sHCU8mB7Mav",
+            "stripe_price_id_live": "price_scale_live_id",
+            "active": true
+        },
+        {
+            "id": "scale_yearly",
+            "name": "Scale (Yearly)",
+            "price": 1516.80,
+            "currency": "usd",
+            "interval": "year",
+            "features": [
+                "500 Content Credits/month",
+                "3 AI Chatbots",
+                "2M Characters Training Data (Rollover)",
+                "3,000 Messages/month",
+                "Standard Support",
+                "Save 15% on Yearly Billing"
+            ],
+            "limits": {
+                "blog_ideas_credits": 500,
+                "faq_credits": 500,
+                "blog_creation_credits": 1000,
+                "chatbot_messages_credits": 3000,
+                "chatbot_training_credits": 2000000,
+                "chatbot_count": 3,
+                "white_label": false
+            },
+            "stripe_price_id_test": "price_scale_yearly_test_id",
+            "stripe_price_id_live": "price_scale_yearly_live_id",
+            "active": true
+        },
+        {
+            "id": "scale_plus",
+            "name": "Scale+",
+            "price": 249,
+            "currency": "usd",
+            "interval": "month",
+            "features": [
+                "1,000 Content Credits/month",
+                "5 AI Chatbots",
+                "5M Characters Training Data (Rollover)",
+                "7,500 Messages/month",
+                "Enhanced Support"
+            ],
+            "limits": {
+                "blog_ideas_credits": 1000,
+                "faq_credits": 1000,
+                "blog_creation_credits": 2000,
+                "chatbot_messages_credits": 7500,
+                "chatbot_training_credits": 5000000,
+                "chatbot_count": 5,
+                "white_label": false
+            },
+            "stripe_price_id_test": "price_1SosvCJMg4e29sHCHLIBSx4M",
+            "stripe_price_id_live": "price_scale_plus_live_id",
+            "active": true
+        },
+        {
+            "id": "scale_plus_yearly",
+            "name": "Scale+ (Yearly)",
+            "price": 2536.80,
+            "currency": "usd",
+            "interval": "year",
+            "features": [
+                "1,000 Content Credits/month",
+                "5 AI Chatbots",
+                "5M Characters Training Data (Rollover)",
+                "7,500 Messages/month",
+                "Enhanced Support",
+                "Save 15% on Yearly Billing"
+            ],
+            "limits": {
+                "blog_ideas_credits": 1000,
+                "faq_credits": 1000,
+                "blog_creation_credits": 2000,
+                "chatbot_messages_credits": 7500,
+                "chatbot_training_credits": 5000000,
+                "chatbot_count": 5,
+                "white_label": false
+            },
+            "stripe_price_id_test": "price_scale_plus_yearly_test_id",
+            "stripe_price_id_live": "price_scale_plus_yearly_live_id",
+            "active": true
+        },
+        {
+            "id": "perform",
+            "name": "Perform",
+            "price": 399,
+            "currency": "usd",
+            "interval": "month",
+            "features": [
+                "2,000 Content Credits/month",
+                "7 AI Chatbots",
+                "10M Characters Training Data (Rollover)",
+                "15,000 Messages/month",
+                "Enhanced Support"
+            ],
+            "limits": {
+                "blog_ideas_credits": 2000,
+                "faq_credits": 2000,
+                "blog_creation_credits": 4000,
+                "chatbot_messages_credits": 15000,
+                "chatbot_training_credits": 10000000,
+                "chatbot_count": 7,
+                "white_label": false
+            },
+            "stripe_price_id_test": "price_1SoswjJMg4e29sHClm8ds74L",
+            "stripe_price_id_live": "price_perform_live_id",
+            "active": true
+        },
+        {
+            "id": "perform_yearly",
+            "name": "Perform (Yearly)",
+            "price": 3830.40,
+            "currency": "usd",
+            "interval": "year",
+            "features": [
+                "2,000 Content Credits/month",
+                "7 AI Chatbots",
+                "10M Characters Training Data (Rollover)",
+                "15,000 Messages/month",
+                "Enhanced Support",
+                "Save 20% on Yearly Billing"
+            ],
+            "limits": {
+                "blog_ideas_credits": 2000,
+                "faq_credits": 2000,
+                "blog_creation_credits": 4000,
+                "chatbot_messages_credits": 15000,
+                "chatbot_training_credits": 10000000,
+                "chatbot_count": 7,
+                "white_label": false
+            },
+            "stripe_price_id_test": "price_perform_yearly_test_id",
+            "stripe_price_id_live": "price_perform_yearly_live_id",
+            "active": true
+        },
+        {
+            "id": "dominate",
+            "name": "Dominate",
+            "price": 599,
+            "currency": "usd",
+            "interval": "month",
+            "features": [
+                "5,000 Content Credits/month",
+                "10 AI Chatbots",
+                "20M Characters Training Data (Rollover)",
+                "30,000 Messages/month",
+                "✨ White Label Included",
+                "Priority Support"
+            ],
+            "limits": {
+                "blog_ideas_credits": 5000,
+                "faq_credits": 5000,
+                "blog_creation_credits": 10000,
+                "chatbot_messages_credits": 30000,
+                "chatbot_training_credits": 20000000,
+                "chatbot_count": 10,
+                "white_label": true
+            },
+            "stripe_price_id_test": "price_1SosxsJMg4e29sHCThxEW4Xx",
+            "stripe_price_id_live": "price_dominate_live_id",
+            "active": true
+        },
+        {
+            "id": "dominate_yearly",
+            "name": "Dominate (Yearly)",
+            "price": 5750.40,
+            "currency": "usd",
+            "interval": "year",
+            "features": [
+                "5,000 Content Credits/month",
+                "10 AI Chatbots",
+                "20M Characters Training Data (Rollover)",
+                "30,000 Messages/month",
+                "✨ White Label Included",
+                "Priority Support",
+                "Save 20% on Yearly Billing"
+            ],
+            "limits": {
+                "blog_ideas_credits": 5000,
+                "faq_credits": 5000,
+                "blog_creation_credits": 10000,
+                "chatbot_messages_credits": 30000,
+                "chatbot_training_credits": 20000000,
+                "chatbot_count": 10,
+                "white_label": true
+            },
+            "stripe_price_id_test": "price_dominate_yearly_test_id",
+            "stripe_price_id_live": "price_dominate_yearly_live_id",
+            "active": true
+        },
+        {
+            "id": "white_label",
+            "name": "White Label",
+            "price": 999,
+            "currency": "usd",
+            "interval": "month",
+            "features": [
+                "10,000 Content Credits/month",
+                "20 AI Chatbots",
+                "50M Characters Training Data (Rollover)",
+                "75,000 Messages/month",
+                "✨ Full White Label",
+                "Enterprise Support"
+            ],
+            "limits": {
+                "blog_ideas_credits": 10000,
+                "faq_credits": 10000,
+                "blog_creation_credits": 20000,
+                "chatbot_messages_credits": 75000,
+                "chatbot_training_credits": 50000000,
+                "chatbot_count": 20,
+                "white_label": true
+            },
+            "stripe_price_id_test": "price_1SoszLJMg4e29sHCGs0HZkiM",
+            "stripe_price_id_live": "price_white_label_live_id",
+            "active": true
+        },
+        {
+            "id": "white_label_yearly",
+            "name": "White Label (Yearly)",
+            "price": 9590.40,
+            "currency": "usd",
+            "interval": "year",
+            "features": [
+                "10,000 Content Credits/month",
+                "20 AI Chatbots",
+                "50M Characters Training Data (Rollover)",
+                "75,000 Messages/month",
+                "✨ Full White Label",
+                "Enterprise Support",
+                "Save 20% on Yearly Billing"
+            ],
+            "limits": {
+                "blog_ideas_credits": 10000,
+                "faq_credits": 10000,
+                "blog_creation_credits": 20000,
+                "chatbot_messages_credits": 75000,
+                "chatbot_training_credits": 50000000,
+                "chatbot_count": 20,
+                "white_label": true
+            },
+            "stripe_price_id_test": "price_white_label_yearly_test_id",
+            "stripe_price_id_live": "price_white_label_yearly_live_id",
+            "active": true
+        }
+    ],
+    "addons": [
+        {
+            "id": "addon_message_boost",
+            "name": "Message Boost",
+            "price": 10,
+            "currency": "usd",
+            "interval": "one-time",
+            "description": "+500 messages",
+            "limits": {
+                "chatbot_messages_credits": 500
+            },
+            "stripe_price_id_test": "price_1Sot0vJMg4e29sHCHHzIMMtb",
+            "stripe_price_id_live": "price_addon_message_boost_live_id",
+            "active": true
+        },
+        {
+            "id": "addon_message_pro",
+            "name": "Message Pro",
+            "price": 35,
+            "currency": "usd",
+            "interval": "one-time",
+            "description": "+2,000 messages",
+            "limits": {
+                "chatbot_messages_credits": 2000
+            },
+            "stripe_price_id_test": "price_addon_message_pro_test_id",
+            "stripe_price_id_live": "price_addon_message_pro_live_id",
+            "active": true
+        },
+        {
+            "id": "addon_message_elite",
+            "name": "Message Elite",
+            "price": 80,
+            "currency": "usd",
+            "interval": "one-time",
+            "description": "+5,000 messages",
+            "limits": {
+                "chatbot_messages_credits": 5000
+            },
+            "stripe_price_id_test": "price_addon_message_elite_test_id",
+            "stripe_price_id_live": "price_addon_message_elite_live_id",
+            "active": true
+        },
+        {
+            "id": "addon_training_boost",
+            "name": "Training Boost",
+            "price": 15,
+            "currency": "usd",
+            "interval": "one-time",
+            "description": "+1M characters",
+            "limits": {
+                "chatbot_training_credits": 1000000
+            },
+            "stripe_price_id_test": "price_addon_training_boost_test_id",
+            "stripe_price_id_live": "price_addon_training_boost_live_id",
+            "active": true
+        },
+        {
+            "id": "addon_training_pro",
+            "name": "Training Pro",
+            "price": 60,
+            "currency": "usd",
+            "interval": "one-time",
+            "description": "+5M characters",
+            "limits": {
+                "chatbot_training_credits": 5000000
+            },
+            "stripe_price_id_test": "price_addon_training_pro_test_id",
+            "stripe_price_id_live": "price_addon_training_pro_live_id",
+            "active": true
+        },
+        {
+            "id": "addon_training_elite",
+            "name": "Training Elite",
+            "price": 100,
+            "currency": "usd",
+            "interval": "one-time",
+            "description": "+10M characters",
+            "limits": {
+                "chatbot_training_credits": 10000000
+            },
+            "stripe_price_id_test": "price_addon_training_elite_test_id",
+            "stripe_price_id_live": "price_addon_training_elite_live_id",
+            "active": true
+        },
+        {
+            "id": "addon_credit_boost",
+            "name": "Credit Boost",
+            "price": 20,
+            "currency": "usd",
+            "interval": "one-time",
+            "description": "+100 credits",
+            "limits": {
+                "blog_ideas_credits": 100,
+                "faq_credits": 100,
+                "blog_creation_credits": 200
+            },
+            "stripe_price_id_test": "price_addon_credit_boost_test_id",
+            "stripe_price_id_live": "price_addon_credit_boost_live_id",
+            "active": true
+        },
+        {
+            "id": "addon_credit_pro",
+            "name": "Credit Pro",
+            "price": 50,
+            "currency": "usd",
+            "interval": "one-time",
+            "description": "+300 credits",
+            "limits": {
+                "blog_ideas_credits": 300,
+                "faq_credits": 300,
+                "blog_creation_credits": 600
+            },
+            "stripe_price_id_test": "price_addon_credit_pro_test_id",
+            "stripe_price_id_live": "price_addon_credit_pro_live_id",
+            "active": true
+        },
+        {
+            "id": "addon_credit_elite",
+            "name": "Credit Elite",
+            "price": 150,
+            "currency": "usd",
+            "interval": "one-time",
+            "description": "+1,000 credits",
+            "limits": {
+                "blog_ideas_credits": 1000,
+                "faq_credits": 1000,
+                "blog_creation_credits": 2000
+            },
+            "stripe_price_id_test": "price_addon_credit_elite_test_id",
+            "stripe_price_id_live": "price_addon_credit_elite_live_id",
+            "active": true
+        },
+        {
+            "id": "addon_starter_bundle",
+            "name": "Starter Bundle",
+            "price": 25,
+            "currency": "usd",
+            "interval": "one-time",
+            "description": "+200 messages, +500K chars, +50 credits",
+            "limits": {
+                "chatbot_messages_credits": 200,
+                "chatbot_training_credits": 500000,
+                "blog_ideas_credits": 50,
+                "faq_credits": 50,
+                "blog_creation_credits": 100
+            },
+            "stripe_price_id_test": "price_addon_starter_bundle_test_id",
+            "stripe_price_id_live": "price_addon_starter_bundle_live_id",
+            "active": true
+        },
+        {
+            "id": "addon_growth_bundle",
+            "name": "Growth Bundle",
+            "price": 90,
+            "currency": "usd",
+            "interval": "one-time",
+            "description": "+1,000 messages, +2M chars, +150 credits",
+            "limits": {
+                "chatbot_messages_credits": 1000,
+                "chatbot_training_credits": 2000000,
+                "blog_ideas_credits": 150,
+                "faq_credits": 150,
+                "blog_creation_credits": 300
+            },
+            "stripe_price_id_test": "price_addon_growth_bundle_test_id",
+            "stripe_price_id_live": "price_addon_growth_bundle_live_id",
+            "active": true
+        }
+    ],
+    "coupons": [
+        {
+            "id": "TEST_WL_900",
+            "name": "White Label Discount",
+            "percent_off": null,
+            "amount_off": 99,
+            "applicable_plans": [
+                "white_label",
+                "white_label_yearly"
+            ],
+            "active": true
+        },
+        {
+            "id": "C7k7Ri67",
+            "name": "General 20% Off",
+            "percent_off": 20,
+            "amount_off": null,
+            "applicable_plans": [
+                "launch",
+                "launch_plus",
+                "scale",
+                "launch_yearly",
+                "launch_plus_yearly",
+                "scale_yearly"
+            ],
+            "active": true
+        }
+    ]
+}

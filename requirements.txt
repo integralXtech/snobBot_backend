@@ -1,0 +1,40 @@
+# FastAPI and Web Framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Supabase
+supabase==2.9.1
+pydantic[email]
+
+# HTTP Requests
+requests==2.31.0
+
+# Environment and Configuration
+python-dotenv==1.0.1
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# For RAG pipeline
+PyMuPDF==1.26.3
+langchain==0.3.27
+sentence-transformers==5.1.0
+numpy==2.3.2
+Flask==3.1.1
+flask-cors==1.4.0
+pinecone
+openai
+python-multipart
+python-docx
+bs4
+playwright
+beautifulsoup4
+certifi
+
+# For s3
+boto3
+playwright-stealth
+undetected-playwright
+pyreadline3
+
+# Stripe Payments
+stripe==7.0.0
