@@ -167,5 +167,4 @@ backend_error.log
 backend_error.txt
 STRIPE_IMPLEMENTATION.md
 STRIPE_TESTING_GUIDE.md
-supabase/
 test_client/
