@@ -52,7 +52,7 @@ async def register(user_data: RegisterRequest):
         logger.info(f"User {user_data.email} registered successfully")
         return AuthResponse(
             success=True,
-            message="Please confirm your email to complete signup",
+            message="User registered successfully. You can now log in.",
             user=result.get('user')
         )
     
@@ -112,7 +112,7 @@ async def login(user_data: LoginRequest):
         logger.warning(f"Login failed for {user_data.email}: {result['error']}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=result["error"]
+            detail=result.get("message", "Invalid email or password")
         )
 
     logger.info(f"User {user_data.email} logged in successfully")

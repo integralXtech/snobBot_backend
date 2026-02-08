@@ -9,6 +9,8 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(...)
     name: str = Field(..., min_length=1, max_length=100)
+    agency_id: Optional[str] = None
+    user_type: Optional[str] = None
 
     @field_validator("password")
     @classmethod
@@ -38,6 +40,7 @@ class UserResponse(BaseModel):
     email: str
     name: str
     approved: bool
+    user_type: Optional[str] = None
     created_at: Optional[datetime] = None
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None

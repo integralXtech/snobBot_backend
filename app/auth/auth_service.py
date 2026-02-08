@@ -40,7 +40,9 @@ async def ensure_user_in_database(user_data: Dict[str, Any]) -> Dict[str, Any]:
                 'id': user_data['id'],
                 'email': user_data['email'],
                 'name': user_data['name'],
-                'approved': user_data.get('approved', True)
+                'approved': user_data.get('approved', True),
+                'agency_id': user_data.get('agency_id'),
+                'user_type': user_data.get('user_type')
             }
 
             insert_response = supabase.table('registered_users').insert([user_to_insert]).execute()
@@ -58,14 +60,59 @@ async def ensure_user_in_database(user_data: Dict[str, Any]) -> Dict[str, Any]:
                     code="INSERT_NO_DATA"
                 )
 
+            new_user = insert_response.data[0]
+
+            # NEW: Assign default agency plan if user is a customer of an agency
+            if new_user.get('agency_id') and new_user.get('user_type') == 'user':
+                try:
+                    # 1. Find a default plan for this agency (e.g. cheapest monthly or containing 'Starter/Free' in name)
+                    plans_res = supabase.table("agency_plans").select("*").eq("agency_id", new_user['agency_id']).eq("interval", "month").order("price").limit(1).execute()
+                    if plans_res.data:
+                        default_plan = plans_res.data[0]
+                        # 2. Create subscription
+                        from datetime import datetime, timedelta
+                        expiry = datetime.now() + timedelta(days=30)
+                        sub_data = {
+                            "agency_id": new_user['agency_id'],
+                            "user_id": new_user['id'],
+                            "plan_id": default_plan['id'],
+                            "status": "active",
+                            "current_period_end": expiry.isoformat()
+                        }
+                        supabase.table("agency_subscriptions").insert(sub_data).execute()
+                        logger.info(f"Assigned default plan {default_plan['name']} to new customer {new_user['email']}")
+                except Exception as sub_err:
+                    logger.error(f"Failed to assign default agency plan: {str(sub_err)}")
+                    # Don't fail the whole registration if sub assignment fails
+
             return success_response(
-                "User inserted successfully",
-                {"user": insert_response.data[0], "inserted": True}
+                data={"user": new_user, "inserted": True},
+                message="User inserted successfully"
             )
 
+        # User exists: Check if we need to force-update fields (fixing the Trigger Race Condition)
+        existing_user = response.data[0]
+        updates = {}
+        
+        # 1. Check User Type
+        incoming_type = user_data.get('user_type')
+        if incoming_type and existing_user.get('user_type') != incoming_type:
+            updates['user_type'] = incoming_type
+            
+        # 2. Check Agency ID
+        incoming_agency = user_data.get('agency_id')
+        if incoming_agency and existing_user.get('agency_id') != incoming_agency:
+            updates['agency_id'] = incoming_agency
+            
+        if updates:
+            logger.info(f"Force-updating user {user_data['email']} with: {updates}")
+            update_res = supabase.table('registered_users').update(updates).eq('id', existing_user['id']).execute()
+            if hasattr(update_res, "data") and update_res.data:
+                existing_user.update(updates)
+
         return success_response(
-            "User already exists",
-            {"user": response.data[0], "inserted": False}
+            data={"user": existing_user, "inserted": False},
+            message="User already exists"
         )
 
     except Exception as e:
@@ -74,103 +121,150 @@ async def ensure_user_in_database(user_data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def register_user(register_data: RegisterRequest) -> Dict[str, Any]:
-    supabase = get_supabase_client()
     try:
-        # Check BOTH Supabase Auth AND your database to prevent duplicate registrations
+        logger.info(f"Registering user: {register_data.email}, User Type: {register_data.user_type}")
         supabase_admin = get_admin_supabase_client()
         
-        # Check your custom table by EMAIL only
-        existing_user = supabase_admin.table('registered_users').select('email').eq('email', register_data.email).execute()
-        
-        # Check Supabase Auth users table by EMAIL only
-        auth_users = supabase_admin.auth.admin.list_users()
-        
-        # Check if email exists in either place
-        email_exists_in_db = existing_user.data and len(existing_user.data) > 0
-        email_exists_in_auth = any(user.email == register_data.email for user in auth_users)
-        
-        if email_exists_in_db or email_exists_in_auth:
-            return error_response(
-                "User with this email already exists. Please log in or reset your password.",
-                code="USER_EXISTS"
-            )
-        
-        # Step 1: Sign up user in Supabase Auth
-        auth_response = supabase.auth.sign_up({
-            'email': register_data.email,
-            'password': register_data.password,
-            'options': {'data': {'name': register_data.name}}
-        })
-
-        # ✅ Check for explicit auth errors first
-        if hasattr(auth_response, 'error') and auth_response.error:
-            error_message = str(auth_response.error.message).lower()
-            if any(phrase in error_message for phrase in [
-                "already registered", "already exists", "duplicate", "user already", "email already"
-            ]):
-                return error_response(
-                    "User with this email already exists. Please log in or reset your password.",
-                    code="USER_EXISTS"
-                )
-            return error_response(
-                f"Signup failed: {auth_response.error.message}",
-                code="AUTH_SIGNUP_FAILED"
-            )
-
-        # ✅ Then handle the case where no user object was returned
-        if not auth_response.user or not getattr(auth_response.user, "id", None):
-            return error_response(
-                "User with this email already exists. Please log in or reset your password.",
-                code="USER_EXISTS"
-            )
-
-        # Step 3: Insert user into database (regardless of email confirmation status)
-        user_id = auth_response.user.id
-        email_confirmed = getattr(auth_response.user, "email_confirmed_at", None)
-
-        user_result = await ensure_user_in_database({
-            'id': user_id,
-            'email': register_data.email,
-            'name': register_data.name,
-            'approved': True
-        })
-        if not user_result["success"]:
-            return user_result
-
-        # Step 4: Return standard API response
-        return {
-            "success": True,
-            "message": "Please confirm your email to complete signup",
-            "error": None,
-            "user": {
-                "id": user_id,
+        # Step 1: Attempt to create user with auto-confirmation
+        user_id = None
+        try:
+            # Fix: Supabase-py v2 Admin API expects a single dictionary of attributes
+            auth_response = supabase_admin.auth.admin.create_user({
                 "email": register_data.email,
-                "name": register_data.name,
-                "approved": True
+                "password": register_data.password,
+                "user_metadata": {"name": register_data.name},
+                "email_confirm": True
+            })
+            user_id = auth_response.id if hasattr(auth_response, 'id') else auth_response.user.id
+            
+            # EXPLICIT CONFIRMATION (Robustness)
+            try:
+                supabase_admin.auth.admin.update_user_by_id(
+                    user_id, 
+                    attributes={"email_confirm": True}
+                )
+                logger.info(f"Explicitly confirmed new user {register_data.email}")
+            except Exception as confirm_err:
+                logger.warning(f"Failed explicit confirm for new user (creation might have handled it): {confirm_err}")
+
+            logger.info(f"User {register_data.email} created via Admin API with id {user_id}")
+        except Exception as auth_error:
+            error_msg = str(auth_error).lower()
+            if any(phrase in error_msg for phrase in ["already registered", "already exists", "duplicate", "email already"]):
+                logger.info(f"User {register_data.email} already exists in Auth. Ensuring confirmation.")
+                
+                # If user exists, force-confirm them
+                existing_users = supabase_admin.auth.admin.list_users()
+                target_user = next((u for u in existing_users if u.email == register_data.email), None)
+                
+                if target_user:
+                    user_id = target_user.id
+                    try:
+                        # Use dict for metadata and attributes
+                        supabase_admin.auth.admin.update_user_by_id(
+                            user_id, 
+                            {"email_confirm": True}
+                        )
+                        logger.info(f"Force-confirmed existing user {register_data.email}")
+                    except Exception as confirm_err:
+                        logger.warning(f"Failed to force-confirm existing user: {confirm_err}")
+                else:
+                    return error_response(
+                        "User with this email already exists. Please log in.",
+                        code="USER_EXISTS"
+                    )
+            else:
+                logger.error(f"Auth signup failed: {auth_error}")
+                return error_response(f"Signup failed: {str(auth_error)}", code="AUTH_SIGNUP_FAILED")
+
+        # Step 2: Ensure user is in our custom database table
+        if user_id:
+            user_result = await ensure_user_in_database({
+                'id': user_id,
+                'email': register_data.email,
+                'name': register_data.name,
+                'approved': True,
+                'agency_id': register_data.agency_id,
+                'user_type': register_data.user_type
+            })
+            if not user_result["success"]:
+                return user_result
+
+            return {
+                "success": True,
+                "message": "User registered and confirmed successfully. You can now log in.",
+                "user": {
+                    "id": user_id,
+                    "email": register_data.email,
+                    "name": register_data.name,
+                    "approved": True,
+                    "user_type": register_data.user_type
+                }
             }
-        }
+        
+        return error_response("Unknown registration error", code="REGISTER_ERROR")
 
     except Exception as e:
-        error_msg = str(e).lower()
-        if any(x in error_msg for x in [
-            "already registered", "already exists", "duplicate", "user already"
-        ]):
-            return error_response(
-                "User with this email already exists. Please log in or reset your password.",
-                code="USER_EXISTS"
-            )
-        return error_response(str(e), code="REGISTER_ERROR")
+        logger.error(f"Unexpected error during registration: {str(e)}")
+        return error_response("Registration failed. Please try again later.", code="REGISTER_ERROR")
 
-# ---------- services/auth_service.py ----------
+
 async def login_user(login_data: LoginRequest) -> Dict[str, Any]:
     try:
         supabase = get_supabase_client()
 
         # Step 1: Authenticate with Supabase Auth
-        auth_response = supabase.auth.sign_in_with_password({
-            "email": login_data.email,
-            "password": login_data.password
-        })
+        try:
+            auth_response = supabase.auth.sign_in_with_password({
+                "email": login_data.email,
+                "password": login_data.password
+            })
+        except Exception as auth_err:
+            error_msg = str(auth_err).lower()
+            # If email is not confirmed, fix it via Admin API and retry once
+            if any(phrase in error_msg for phrase in ["email not confirmed", "confirmation", "verify your email"]):
+                logger.info(f"User {login_data.email} has unconfirmed email. Attempting auto-confirmation...")
+                admin_supabase = get_admin_supabase_client()
+                
+                # Fetch all users to find the ID (Admin API list_users is safer here)
+                users = admin_supabase.auth.admin.list_users()
+                target_user = next((u for u in users if u.email.lower() == login_data.email.lower()), None)
+                
+                if target_user:
+                    try:
+                        admin_supabase.auth.admin.update_user_by_id(
+                            target_user.id, 
+                            {"email_confirm": True}
+                        )
+                        logger.info(f"Successfully auto-confirmed {login_data.email} during login flow.")
+                        
+                        # RETRY LOGIN
+                        auth_response = supabase.auth.sign_in_with_password({
+                            "email": login_data.email,
+                            "password": login_data.password
+                        })
+                    except Exception as retry_err:
+                        logger.error(f"Failed to login after auto-confirmation: {retry_err}")
+                        return {
+                            "success": False,
+                            "message": "Invalid email or password",
+                            "error": str(retry_err),
+                            "user": None
+                        }
+                else:
+                    return {
+                        "success": False,
+                        "message": "Invalid email or password",
+                        "error": str(auth_err),
+                        "user": None
+                    }
+            else:
+                return {
+                    "success": False,
+                    "message": "Invalid email or password",
+                    "error": str(auth_err),
+                    "user": None
+                }
 
         # Debugging (optional):
         # print("Auth response:", auth_response)
@@ -197,21 +291,33 @@ async def login_user(login_data: LoginRequest) -> Dict[str, Any]:
         )
 
         if getattr(user_result, "error", None) or not user_result.data:
-            return {
-                "success": False,
-                "message": "Failed to fetch user profile",
-                "error": "DB_ERROR",
-                "user": None
-            }
+            # Maybe the user is in Auth but not in our table? Try to fix that too.
+            user_fix = await ensure_user_in_database({
+                'id': user_id,
+                'email': auth_response.user.email,
+                'name': auth_response.user.user_metadata.get('name', auth_response.user.email),
+                'approved': True
+            })
+            if user_fix["success"]:
+                db_user = user_fix["data"]["user"]
+            else:
+                return {
+                    "success": False,
+                    "message": "Failed to fetch or create user profile",
+                    "error": "DB_ERROR",
+                    "user": None
+                }
+        else:
+            db_user = user_result.data
 
         # Step 4: Success response
-        db_user = user_result.data
         user_dict = {
             "id": user_id,
             "email": auth_response.user.email,
             "name": db_user.get("name"),
-            "approved": db_user.get("approved", True),  # ✅ fill required field
-            "created_at": db_user.get("created_at"),    # optional
+            "approved": db_user.get("approved", True),
+            "user_type": db_user.get("user_type"),
+            "created_at": db_user.get("created_at"),
             "access_token": getattr(auth_response.session, "access_token", None),
             "refresh_token": getattr(auth_response.session, "refresh_token", None)
         }
@@ -225,9 +331,16 @@ async def login_user(login_data: LoginRequest) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Login error: {str(e)}")
+        error_msg = str(e).lower()
+        # Ensure no confirmation/verification error ever reaches the user
+        if any(phrase in error_msg for phrase in ["confirm", "verify", "not confirmed"]):
+            message = "Invalid email or password"
+        else:
+            message = str(e)
+            
         return {
             "success": False,
-            "message": "Login error",
+            "message": message,
             "error": str(e),
             "user": None
         }

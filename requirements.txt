@@ -18,7 +18,7 @@ pydantic-settings==2.7.0
 PyMuPDF==1.26.3
 langchain==0.3.27
 sentence-transformers==5.1.0
-numpy==2.3.2
+numpy>=1.24.0
 Flask==3.1.1
 flask-cors==1.4.0
 pinecone

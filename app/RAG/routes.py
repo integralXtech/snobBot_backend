@@ -1,3 +1,21 @@
+import sys
+import asyncio
+import os
+import logging
+import certifi
+from playwright.async_api import async_playwright
+
+# Define logger
+logger = logging.getLogger(__name__)
+
+# Fix for asyncio NotImplementedError on Windows when using subprocesses (Playwright)
+if sys.platform == 'win32':
+    try:
+        if not isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsProactorEventLoopPolicy):
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
+
 import requests
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Header, Body
 from fastapi.responses import JSONResponse
@@ -26,14 +44,6 @@ from app.helpers.agency_helper import (
     track_and_log_usage, 
     validate_api_key_v2
 )
-import asyncio
-from playwright.sync_api import sync_playwright
-from playwright.async_api import async_playwright
-from undetected_playwright import stealth_async
-
-
-import certifi
-import os
 
 _browser = None
 _playwright = None
@@ -868,19 +878,32 @@ async def discover_links(request: DiscoverRequest, current_user: dict = Depends(
 async def startup_event():
     """Launch a single global Playwright browser asynchronously with stealth args."""
     global _playwright, _browser
-    os.environ["SSL_CERT_FILE"] = certifi.where()
-    _playwright = await async_playwright().start()
     
-    # Launch with stealth arguments to avoid detection
-    _browser = await _playwright.chromium.launch(
-        headless=True,
-        args=[
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-setuid-sandbox"
-        ]
-    )
-    print("✅ Playwright browser started globally (Stealth Mode).")
+    try:
+        # Re-apply loop policy fix if needed for the current thread/loop
+        if sys.platform == 'win32':
+            try:
+                if not isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsProactorEventLoopPolicy):
+                    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            except Exception:
+                pass
+                
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+        _playwright = await async_playwright().start()
+        
+        # Launch with stealth arguments to avoid detection
+        _browser = await _playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox"
+            ]
+        )
+        print("✅ Playwright browser started globally (Stealth Mode).")
+    except Exception as e:
+        logger.error(f"❌ Failed to start Playwright: {e}")
+        print(f"⚠️ Warning: Playwright could not start. Web scraping features will be disabled. Error: {e}")
 
 
 @rag_router.on_event("shutdown")

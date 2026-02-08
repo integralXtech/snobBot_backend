@@ -1,10 +1,20 @@
-"""Main FastAPI application with Supabase authentication."""
 import os
 import sys
+import asyncio
+
+# Fix for asyncio NotImplementedError on Windows when using subprocesses (Playwright)
+# This MUST be set before any event loop is created (e.g. by uvicorn)
+if sys.platform == 'win32':
+    try:
+        # Check if it's already a Proactor event loop policy
+        if not isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsProactorEventLoopPolicy):
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
+
 import logging
 from contextlib import asynccontextmanager
 import subprocess
-import asyncio
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -21,6 +31,7 @@ from app.SEO.routes import seo_router
 from app.Blog.routes import blog_router
 from app.payments import payments_router
 from app.payments.agency_routes import agency_payments_router
+from app.agency.routes import agency_router
 from app.helpers.response_helper import error_response
 
 
@@ -81,10 +92,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+import json
+
 # Add CORS middleware
+# Parse CORS_ORIGINS from settings (it might be a JSON string or comma-separated)
+# We strip potential literal quotes that can appear from .env files
+# Add CORS middleware
+# Note: To support credentials with "allow all", we use a catch-all regex
+# because allow_origins=["*"] is not permitted with allow_credentials=True
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[], # Must be empty if allow_origin_regex is used
+    allow_origin_regex=r"https?://.*",  # Truly allow all origins (dev only)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -142,6 +161,7 @@ app.include_router(seo_router, prefix=settings.api_prefix)
 app.include_router(blog_router, prefix=settings.api_prefix)
 app.include_router(payments_router, prefix=settings.api_prefix)
 app.include_router(agency_payments_router, prefix=settings.api_prefix)
+app.include_router(agency_router, prefix=settings.api_prefix)
 
 
 # ---------------------------
