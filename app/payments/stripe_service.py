@@ -12,7 +12,7 @@ from app.supabase import get_admin_supabase_client
 stripe.api_key = settings.stripe_secret_key
 
 # Agencies Feature: Snobbot Platform Client ID for Stripe Connect
-STRIPE_CONNECT_CLIENT_ID = os.getenv("STRIPE_CONNECT_CLIENT_ID")
+STRIPE_CONNECT_CLIENT_ID = settings.stripe_connect_client_id
 
 
 def load_content() -> Dict:
@@ -686,15 +686,78 @@ async def handle_webhook_event(event: Dict) -> None:
                 else:
                     print(f"⚠️ Webhook Warning: Skipping credit allocation for user {user_id}. No active subscription found in database for plan '{plan_id}'.")
     
-    elif event_type == "payment_intent.succeeded":
-        payment_intent = event["data"]["object"]
-        user_id = payment_intent.metadata.get("user_id")
-        plan_id = payment_intent.metadata.get("plan_id")
+    elif event_type == "checkout.session.completed":
+        session = event["data"]["object"]
+        metadata = session.get("metadata", {})
         
-        if user_id and plan_id:
-            # Check if this was a one-time payment/special offer
-            # (One-time payments are identified by metadata)
-            await allocate_user_credits(user_id, plan_id)
+        # Check if this is an agency subscription
+        if metadata.get("type") == "agency_subscription":
+            user_id = metadata.get("user_id")
+            agency_id = metadata.get("agency_id")
+            plan_id = metadata.get("plan_id")
+            
+            if user_id and agency_id and plan_id:
+                print(f"💰 Webhook: Agency subscription completed for user {user_id}, agency {agency_id}")
+                
+                # 1. Get Agency Plan details
+                plan_res = supabase.table("agency_plans").select("*").eq("id", plan_id).execute()
+                if plan_res.data:
+                    plan = plan_res.data[0]
+                    
+                    # 2. Update user limits and agency affiliation
+                    supabase.table("registered_users").update({
+                        "agency_id": agency_id,
+                        "plan_id": plan_id
+                    }).eq("id", user_id).execute()
+
+                    # Allocate credits
+                    supabase.rpc("increment_user_balance", {
+                        "target_user_id": user_id,
+                        "add_messages_credits": plan.get("limit_messages", 0),
+                        "add_training_credits": plan.get("limit_training_chars", 0),
+                        "add_chatbot_count": plan.get("limit_chatbots", 0),
+                        "add_blog_creation": plan.get("limit_blog_creation", 0),
+                        "add_blog_ideas": plan.get("limit_blog_ideas", 0),
+                        "add_faq": plan.get("limit_faqs", 0),
+                        "is_renewal": False,
+                        "set_white_label": False
+                    }).execute()
+                    
+                    # 3. Create/Update subscription record
+                    import datetime
+                    period_end = (datetime.datetime.utcnow() + datetime.timedelta(days=30)).isoformat()
+                    
+                    # Check if already exists
+                    existing_sub = supabase.table("agency_subscriptions").select("id").eq("customer_id", user_id).eq("agency_id", agency_id).execute()
+                    
+                    sub_data = {
+                        "customer_id": user_id,
+                        "plan_id": plan_id,
+                        "agency_id": agency_id,
+                        "status": "active",
+                        "current_period_end": period_end
+                    }
+                    
+                    if existing_sub.data:
+                        supabase.table("agency_subscriptions").update(sub_data).eq("id", existing_sub.data[0]["id"]).execute()
+                    else:
+                        supabase.table("agency_subscriptions").insert(sub_data).execute()
+                        
+                    # 4. Record in Payment History
+                    supabase.table("payment_history").insert({
+                        "user_id": user_id,
+                        "stripe_payment_intent_id": session.get("payment_intent"),
+                        "amount": session.get("amount_total", 0),
+                        "currency": session.get("currency", "usd"),
+                        "status": "succeeded",
+                        "description": f"Agency Subscription: {plan['name']}",
+                        "payment_type": "subscription",
+                        "metadata": {
+                            "plan_id": plan_id,
+                            "agency_id": agency_id,
+                            "checkout_session_id": session.id
+                        }
+                    }).execute()
 
     elif event_type == "invoice.payment_failed":
         invoice = event["data"]["object"]
@@ -998,7 +1061,7 @@ async def preview_upgrade_proration(user_id: str, new_plan_id: str) -> Dict:
 # AGENCY CONNECT & MULTI-TENANT BILLING
 # ---------------------------------------------------------
 
-async def generate_agency_connect_url(user_id: str, redirect_uri: str) -> str:
+async def generate_agency_connect_url(user_id: str, redirect_uri: str, email: str = None) -> str:
     """Generate the Stripe Connect OAuth authorization URL for an agency owner."""
     # Ensure user is an agency owner
     supabase = get_admin_supabase_client()
@@ -1008,28 +1071,106 @@ async def generate_agency_connect_url(user_id: str, redirect_uri: str) -> str:
     
     agency_id = res.data[0]["id"]
     
+    # State can carry both agency_id and email if provided
+    state = f"{agency_id}"
+    if email:
+        state = f"{agency_id}:{email}"
+    
     # Generate Stripe OAuth URL
-    url = f"https://connect.stripe.com/oauth/authorize?response_type=code&client_id={STRIPE_CONNECT_CLIENT_ID}&scope=read_write&state={agency_id}&redirect_uri={redirect_uri}"
+    url = f"https://connect.stripe.com/oauth/authorize?client_id={settings.stripe_connect_client_id}&response_type=code&scope=read_write&state={state}"
     return url
 
-async def handle_agency_connect_callback(code: str, agency_id: str) -> bool:
+async def handle_agency_connect_callback(code: str, state: str) -> bool:
     """Exchange OAuth code for Stripe Connect account ID and store it."""
     try:
-        response = stripe.OAuth.token(
-            grant_type="authorization_code",
-            code=code,
-        )
-        connect_id = response["stripe_user_id"]
-        
-        # Store in agencies table
+        # State might contain agency_id:email
+        print(f"DEBUG: Processing Connect callback with state: {state}")
+        parts = state.split(":")
+        agency_id = parts[0]
+        fallback_email = parts[1] if len(parts) > 1 else None
+
+        # Idempotency check: If agency already connected, we might be in a React double-call
         supabase = get_admin_supabase_client()
-        supabase.table("agencies").update({
-            "stripe_connect_id": connect_id
-        }).eq("id", agency_id).execute()
+        agency_res = supabase.table("agencies").select("stripe_connect_id").eq("id", agency_id).execute()
+        if agency_res.data and agency_res.data[0].get("stripe_connect_id"):
+            print(f"DEBUG: Agency {agency_id} already has a connected account. Assuming success from previous request.")
+            return True
+
+        print(f"DEBUG: Exchanging token for code: {code[:10]}...")
+        try:
+            response = stripe.OAuth.token(
+                grant_type="authorization_code",
+                code=code,
+            )
+            connect_id = response["stripe_user_id"]
+            print(f"DEBUG: Connected account ID: {connect_id}")
+        except stripe.error.StripeError as e:
+            # Handle "code already used" which happens in React Strict Mode double-calls
+            if "already used" in str(e).lower() or "invalid_grant" in str(e).lower():
+                print(f"DEBUG: Code already used or invalid grant. Checking if connection succeeded anyway...")
+                # Re-check database
+                agency_res = supabase.table("agencies").select("stripe_connect_id").eq("id", agency_id).execute()
+                if agency_res.data and agency_res.data[0].get("stripe_connect_id"):
+                    return True
+            print(f"CRITICAL: OAuth token exchange failed: {e}")
+            return False
+        except Exception as oauth_err:
+            print(f"CRITICAL: OAuth token exchange unexpected error: {oauth_err}")
+            return False
+
+        # Fetch account details to get email and status
+        try:
+            account = stripe.Account.retrieve(connect_id)
+            email = account.get("email") or fallback_email
+            # Use details_submitted or charges_enabled as a proxy for 'Active'
+            status = "Active" if account.get("details_submitted") or account.get("charges_enabled") else "Pending"
+        except Exception as acc_err:
+            print(f"ERROR: Failed to retrieve account details for {connect_id}: {acc_err}")
+            email = fallback_email
+            status = "Pending"
+
+        import datetime
+        connected_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         
+        # We try to update the specific columns, but fallback to branding_settings if they don't exist
+        update_data = {
+            "stripe_connect_id": connect_id
+        }
+        
+        print(f"DEBUG: Updating agency {agency_id} with Stripe info...")
+        try:
+            res = supabase.table("agencies").update({
+                **update_data,
+                "stripe_connected_at": connected_at,
+                "stripe_account_email": email,
+                "stripe_account_status": status
+            }).eq("id", agency_id).execute()
+            
+            if not res.data:
+                print(f"WARNING: No agency found with ID {agency_id} while updating columns.")
+                raise Exception("No agency found")
+                
+        except Exception as update_err:
+            print(f"DEBUG: Column update failed, trying branding_settings fallback: {update_err}")
+            res = supabase.table("agencies").select("branding_settings").eq("id", agency_id).execute()
+            if not res.data:
+                return False
+                
+            branding = res.data[0].get("branding_settings") or {}
+            branding["stripe_meta"] = {
+                "connected_at": connected_at,
+                "email": email,
+                "status": status
+            }
+            supabase.table("agencies").update({
+                **update_data,
+                "branding_settings": branding
+            }).eq("id", agency_id).execute()
+        
+        print(f"DEBUG: Successfully linked Stripe account {connect_id} to agency {agency_id}")
         return True
     except Exception as e:
-        print(f"Error exchange Stripe Connect token: {e}")
+        print(f"CRITICAL: handle_agency_connect_callback global error: {e}")
         return False
 
 async def subscribe_to_agency_plan(
@@ -1037,12 +1178,13 @@ async def subscribe_to_agency_plan(
     email: str, 
     plan_id: str, 
     agency_id: str,
-    coupon_code: Optional[str] = None
+    coupon_code: Optional[str] = None,
+    origin: Optional[str] = None
 ) -> Dict:
     """
     Handle user subscription to an AGENCY'S plan.
     Payments go to Agency's Stripe Connect account.
-    Snobbot takes a 10% platform fee.
+    Snobbot takes 0% platform fee.
     """
     supabase = get_admin_supabase_client()
     
@@ -1061,27 +1203,39 @@ async def subscribe_to_agency_plan(
     plan = plan_res.data[0]
     
     # 3. Create/Get Customer on the PLATFORM (Parent account)
-    # We maintain customers at platform level for simplicity
     customer_id = await get_or_create_customer(user_id, email)
     
     # 4. Process Payment (Direct Charge via Connect)
-    # For subscriptions on Connect, we use "Destination Charges" or "Direct Charges".
-    # Here we'll use a PaymentIntent for simplicity in a "One-Time" style or handle recurring logic.
-    # Note: Full recurring subscription on Connect is more complex, requiring prices on the connected account.
-    # For now, we'll implement the "Charge with Platform Fee" logic.
-    
     amount_cents = int(plan["price"] * 100)
-    platform_fee_cents = int(amount_cents * 0.10) # 10% Snobbot Fee
+    platform_fee_cents = 0 # 0% Fee
     
     try:
-        # Create payment intent on behalf of the agency
-        intent = stripe.PaymentIntent.create(
-            amount=amount_cents,
-            currency="usd",
-            customer=customer_id,
-            application_fee_amount=platform_fee_cents,
-            transfer_data={
-                "destination": connect_id,
+        # Create Stripe Checkout Session
+        # The success/cancel URLs should point back to the platform
+        base_url = origin or "http://localhost:3000"
+        success_url = f"{base_url}/payment-success?session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{base_url}/white-label/plans"
+
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {
+                        "name": f"Agency Plan: {plan['name']}",
+                        "description": plan.get("description", ""),
+                    },
+                    "unit_amount": amount_cents,
+                },
+                "quantity": 1,
+            }],
+            mode="payment",
+            success_url=success_url,
+            cancel_url=cancel_url,
+            payment_intent_data={
+                "transfer_data": {
+                    "destination": connect_id,
+                },
             },
             metadata={
                 "user_id": user_id,
@@ -1091,27 +1245,99 @@ async def subscribe_to_agency_plan(
             }
         )
         
-        # In a real app, we'd wait for frontend confirmation or use setup_intents.
-        # Here we'll assume the payment succeeds (or simulate it).
-        
-        # 5. Update user limits based on agency plan
-        # Agency plans are custom, we'll map them to the same allocation logic
-        limits = plan.get("limits", {})
-        supabase.rpc("increment_user_balance", {
-            "target_user_id": user_id,
-            "add_messages_credits": limits.get("messages", 0),
-            "add_training_credits": limits.get("training", 0),
-            "add_chatbot_count": limits.get("chatbots", 0),
-            "agency_id": agency_id # Tag user with agency_id
-        }).execute()
-        
         return {
-            "status": "succeeded",
-            "payment_intent_id": intent.id,
+            "status": "pending",
+            "checkout_url": session.url,
+            "session_id": session.id,
+            "plan_id": plan_id,
+            "plan_name": plan["name"],
+            "amount": amount_cents / 100,
+            "currency": "usd",
             "agency_id": agency_id
         }
     except Exception as e:
+        print(f"Error creating agency checkout session: {e}")
+        raise e
+    except Exception as e:
         print(f"Error in agency subscription payment: {e}")
+        raise e
+
+async def subscribe_to_agency_plan_dummy(
+    user_id: str, 
+    email: str, 
+    plan_id: str, 
+    agency_id: str
+) -> Dict:
+    """
+    Handle user subscription to an AGENCY'S plan BYPASSING Stripe (Dummy).
+    Used for testing or when Stripe is not yet configured.
+    """
+    supabase = get_admin_supabase_client()
+    
+    # 1. Get Agency Plan details
+    plan_res = supabase.table("agency_plans").select("*").eq("id", plan_id).execute()
+    if not plan_res.data:
+        raise ValueError("Agency plan not found.")
+    
+    plan = plan_res.data[0]
+    
+    try:
+        # 2. Update user limits and agency affiliation
+        supabase.table("registered_users").update({
+            "agency_id": agency_id,
+            "plan_id": plan_id
+        }).eq("id", user_id).execute()
+
+        supabase.rpc("increment_user_balance", {
+            "target_user_id": user_id,
+            "add_messages_credits": plan.get("limit_messages", 0),
+            "add_training_credits": plan.get("limit_training_chars", 0),
+            "add_chatbot_count": plan.get("limit_chatbots", 0),
+            "add_blog_creation": plan.get("limit_blog_creation", 0),
+            "add_blog_ideas": plan.get("limit_blog_ideas", 0),
+            "add_faq": plan.get("limit_faqs", 0),
+            "is_renewal": False,
+            "set_white_label": False
+        }).execute()
+        
+        # 3. Create subscription record
+        tenant_subscription = {
+            "customer_id": user_id,
+            "plan_id": plan_id,
+            "agency_id": agency_id,
+            "status": "active",
+            "current_period_end": datetime.fromtimestamp(datetime.utcnow().timestamp() + (30 * 24 * 3600)).isoformat()
+        }
+        
+        supabase.table("agency_subscriptions").insert(tenant_subscription).execute()
+
+        # 4. Record in Payment History (Dummy)
+        supabase.table("payment_history").insert({
+            "user_id": user_id,
+            "amount": int(plan["price"] * 100),
+            "currency": "usd",
+            "status": "succeeded",
+            "description": f"Agency Subscription: {plan['name']} (Mock)",
+            "payment_type": "subscription",
+            "metadata": {
+                "plan_id": plan_id,
+                "agency_id": agency_id,
+                "is_dummy": True
+            }
+        }).execute()
+
+        return {
+            "status": "succeeded",
+            "message": "Dummy subscription successful",
+            "plan_name": plan["name"],
+            "plan_id": plan_id,
+            "amount_paid": plan["price"],
+            "currency": "usd",
+            "subscription_id": f"sub_dummy_{datetime.utcnow().timestamp()}",
+            "agency_id": agency_id
+        }
+    except Exception as e:
+        print(f"Error in dummy agency subscription: {e}")
         raise e
 
 async def bill_agency_overage(agency_id: str, amount_cents: int, description: str):
@@ -1143,3 +1369,33 @@ async def bill_agency_overage(agency_id: str, amount_cents: int, description: st
     )
     
     return invoice.id
+async def get_checkout_session_details(session_id: str) -> Dict:
+    """Retrieve details of a Checkout Session for the success page."""
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+        metadata = session.get("metadata", {})
+        
+        # Try to get a nicer plan name if possible
+        plan_id = metadata.get("plan_id")
+        plan_name = f"Plan: {plan_id}"
+        
+        if plan_id:
+            supabase = get_admin_supabase_client()
+            plan_res = supabase.table("agency_plans").select("name").eq("id", plan_id).execute()
+            if plan_res.data:
+                plan_name = plan_res.data[0]["name"]
+        
+        return {
+            "status": session.get("payment_status"),
+            "amount_paid": session.get("amount_total", 0) / 100,
+            "currency": session.get("currency", "usd"),
+            "plan_id": plan_id,
+            "plan_name": plan_name,
+            "subscription_id": session.get("payment_intent") or session.get("subscription") or session.id,
+            "user_id": metadata.get("user_id"),
+            "type": metadata.get("type"),
+            "customer_email": session.get("customer_details", {}).get("email")
+        }
+    except Exception as e:
+        print(f"Error retrieving checkout session: {e}")
+        return None

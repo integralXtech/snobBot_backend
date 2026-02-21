@@ -35,7 +35,11 @@ def generate_response(query: str, user_id: str, chatbot_title: str):
 
     # ✅ Check if index exists
     if index_name not in pc.list_indexes().names():
-        return f"⚠️ No knowledge base found. Please upload documents first.", {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        return {
+            "response": "⚠️ No knowledge base found. Please upload documents first.",
+            "tokens_used": 0,
+            "usage": {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        }
 
     index = pc.Index(index_name)
     
@@ -84,4 +88,8 @@ Answer:"""
         "total_tokens": response.usage.total_tokens
     }
 
-    return full_text, usage
+    return {
+        "response": full_text,
+        "tokens_used": usage["total_tokens"],
+        "usage": usage
+    }

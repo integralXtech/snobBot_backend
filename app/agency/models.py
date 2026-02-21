@@ -84,3 +84,9 @@ class CustomerCreate(BaseModel):
     email: str
     password: str
     plan_id: Optional[str] = None # Now links to agency_plans.id
+
+class TicketCreate(BaseModel):
+    subject: str
+    message: str
+    priority: str = "medium"
+    ticket_type: str = "client_to_agency" # 'agency_to_platform' or 'client_to_agency'

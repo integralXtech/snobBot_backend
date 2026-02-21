@@ -11,6 +11,7 @@ from app.supabase import get_admin_supabase_client
 from app.helpers.spider_client import discover_links_spider, scrape_url_spider
 from app.SEO.models import FAQItem
 from openai import OpenAI
+from app.helpers.credit_manager import CreditManager
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,9 @@ async def process_seo_job(job_id: str, url: str, scope: str, user_id: str):
                        "page_url": target_page,
                        "faq_data": [f.dict() for f in faqs]
                    }).execute()
+
+                   # 4. Deduct Credit
+                   CreditManager.consume_credits(user_id, "faq", 1)
                    
             except Exception as e:
                 logger.warning(f"Failed to process page {target_page} in job {job_id}: {e}")

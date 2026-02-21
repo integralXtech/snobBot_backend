@@ -20,6 +20,7 @@ from app.RAG.pdf_processor import process_and_index_data,sanitize_id
 from app.RAG.token_tracker import update_tokens
 from app.RAG import routes as rag_routes  # to call fetch_and_index internally (async)
 from app.helpers.agency_helper import check_usage_limits, track_and_log_usage, get_user_agency_info
+from app.helpers.credit_manager import CreditManager
 # NOTE: rag_routes.fetch_and_index is async; we'll await it in crawl flow below
 
 s3_router = APIRouter(prefix="/s3", tags=["S3"])
@@ -122,6 +123,11 @@ async def upload_file_to_s3_api(
             raise HTTPException(403, f"No active API key found for chatbot '{chatbot_title}'")
 
         # 1. Quota Check (Hard Limit for user)
+        # Check Training Credits
+        allowed, reason = CreditManager.has_sufficient_credits(user_id, "training", 1)
+        if not allowed:
+            raise HTTPException(403, reason)
+            
         limit_check = check_usage_limits(user_id)
         if not limit_check["allowed"]:
             raise HTTPException(403, limit_check["reason"])
@@ -145,16 +151,20 @@ async def upload_file_to_s3_api(
             )
 
             # update token tracker
+            tokens_used = proc_result.get("tokens_used", 0)
             try:
                 update_tokens(
                     user_id=user_id,
                     chatbot_title=chatbot_title,
                     operation_type="file_upload",
-                    tokens_used=proc_result.get("tokens_used", 0),
+                    tokens_used=tokens_used,
                 )
             except Exception:
                 # non-fatal if token update fails
                 pass
+            
+            # Deduct Training Credits
+            CreditManager.consume_credits(user_id, "training", tokens_used)
             
             # --- Agencies Feature: Dual Usage Tracking ---
             chatbot_data = (
@@ -240,6 +250,10 @@ async def upload_raw_to_s3_api(
             await remove_raw_and_vectors_api(remove_payload, current_user)
 
         # 1. Quota Check
+        allowed, reason = CreditManager.has_sufficient_credits(user_id, "training", 1)
+        if not allowed:
+            raise HTTPException(403, reason)
+
         limit_check = check_usage_limits(user_id)
         if not limit_check["allowed"]:
             raise HTTPException(403, limit_check["reason"])
@@ -268,15 +282,19 @@ async def upload_raw_to_s3_api(
             )
 
             # Update token usage
+            tokens_used = proc_result.get("tokens_used", 0)
             try:
                 update_tokens(
                     user_id=user_id,
                     chatbot_title=chatbot_title,
                     operation_type="raw_text",
-                    tokens_used=proc_result.get("tokens_used", 0),
+                    tokens_used=tokens_used,
                 )
             except Exception:
                 pass
+            
+            # Deduct Training Credits
+            CreditManager.consume_credits(user_id, "training", tokens_used)
             
             # --- Agencies Feature: Dual Usage Tracking ---
             chatbot_data = (
@@ -344,6 +362,11 @@ async def upload_qa_to_s3_api(
         if not api_key:
             raise HTTPException(403, f"No active API key found for chatbot '{chatbot_title}'")
 
+        # 0. Check Training Credits
+        allowed, reason = CreditManager.has_sufficient_credits(user_id, "training", 1)
+        if not allowed:
+            raise HTTPException(403, detail=reason)
+
         # --------------------------------------------------------------------
         # NEW LOGIC: If replace_existing=True, call /remove/qa first
         # --------------------------------------------------------------------
@@ -373,15 +396,19 @@ async def upload_qa_to_s3_api(
                 chatbot_title=chatbot_title,
             )
 
+            tokens_used = proc_result.get("tokens_used", 0)
             try:
                 update_tokens(
                     user_id=user_id,
                     chatbot_title=chatbot_title,
                     operation_type="qa_pairs",
-                    tokens_used=proc_result.get("tokens_used", 0),
+                    tokens_used=tokens_used,
                 )
             except Exception:
                 pass
+            
+            # Deduct Training Credits
+            CreditManager.consume_credits(user_id, "training", tokens_used)
 
             indexing_result = {
                 "chunks_indexed": proc_result.get("chunks_indexed"),

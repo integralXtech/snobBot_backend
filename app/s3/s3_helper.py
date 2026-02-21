@@ -39,7 +39,8 @@ def list_files_in_s3(prefix: str):
             return []
         return [{"key": obj["Key"]} for obj in response["Contents"]]
     except ClientError as e:
-        return {"status": "error", "message": str(e)}
+        print(f"S3 list_objects_v2 error for prefix {prefix}: {e}")
+        return [] # Return empty list on error to avoid crashing callers
 
 
 def get_file_from_s3(key: str) -> bytes:

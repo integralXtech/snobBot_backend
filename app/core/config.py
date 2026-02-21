@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     stripe_test_publishable_key: str = Field(..., validation_alias="STRIPE_TEST_PUBLISHABLE_KEY")
     stripe_live_publishable_key: str = Field(..., validation_alias="STRIPE_LIVE_PUBLISHABLE_KEY")
     stripe_webhook_secret: str = Field(..., validation_alias="STRIPE_WEBHOOK_SECRET")
+    stripe_test_connect_client_id: Optional[str] = Field(default=None, validation_alias="STRIPE_TEST_CONNECT_CLIENT_ID")
+    stripe_live_connect_client_id: Optional[str] = Field(default=None, validation_alias="STRIPE_LIVE_CONNECT_CLIENT_ID")
+    
+    # Backward compatibility
+    stripe_connect_client_id_default: Optional[str] = Field(default=None, validation_alias="STRIPE_CONNECT_CLIENT_ID")
     
     # App Configuration
     debug: bool = Field(default=False, validation_alias="DEBUG")
@@ -41,6 +46,9 @@ class Settings(BaseSettings):
     
     frontend_url: str = Field(..., validation_alias="FRONTEND_URL")
     backend_url: str = Field(..., validation_alias="BACKEND_URL")
+    
+    # Agency / White Label Configuration
+    agency_plan_min_price: int = Field(default=100, validation_alias="AGENCY_PLAN_MIN_PRICE")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -63,6 +71,13 @@ class Settings(BaseSettings):
     def stripe_publishable_key(self) -> str:
         """Return appropriate Stripe publishable key based on environment."""
         return self.stripe_live_publishable_key if self.is_production else self.stripe_test_publishable_key
+
+    @property
+    def stripe_connect_client_id(self) -> Optional[str]:
+        """Return appropriate Stripe Connect client ID based on environment."""
+        if self.is_production:
+            return self.stripe_live_connect_client_id or self.stripe_connect_client_id_default
+        return self.stripe_test_connect_client_id or self.stripe_connect_client_id_default
 
 
 # Global settings instance

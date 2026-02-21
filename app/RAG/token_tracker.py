@@ -32,7 +32,8 @@ def initialize_bot_tokens(user_id: str, chatbot_title: str):
             .execute()
         )
         
-        if not existing.data:
+        res = existing
+        if not getattr(res, "data", None):
             # Create new bot record with all tokens = 0 and query_count = 0
             supabase.table("bot_token_usage").insert({
                 "user_id": user_id,
@@ -92,8 +93,9 @@ def update_tokens(user_id: str, chatbot_title: str, operation_type: str, tokens_
             .execute()
         )
         
-        if existing.data:
-            current_tokens = existing.data[0][column_name]
+        res_data = getattr(existing, "data", [])
+        if res_data:
+            current_tokens = res_data[0].get(column_name, 0) or 0
             new_total = current_tokens + tokens_used
             
             # Prepare update data
@@ -147,14 +149,15 @@ def get_bot_tokens(user_id: str, chatbot_title: str):
             .execute()
         )
         
-        if result.data:
+        res_data = getattr(result, "data", [])
+        if res_data:
             row = result.data[0]
             operations = {
-                "file_upload": row["file_upload_tokens"],
-                "raw_text": row["raw_text_tokens"],
-                "qa_pairs": row["qa_pairs_tokens"],
-                "web_crawl": row["web_crawl_tokens"],
-                "ask_query": row["ask_query_tokens"]
+                "file_upload": row.get("file_upload_tokens", 0) or 0,
+                "raw_text": row.get("raw_text_tokens", 0) or 0,
+                "qa_pairs": row.get("qa_pairs_tokens", 0) or 0,
+                "web_crawl": row.get("web_crawl_tokens", 0) or 0,
+                "ask_query": row.get("ask_query_tokens", 0) or 0
             }
             total = sum(operations.values())
             
@@ -162,7 +165,7 @@ def get_bot_tokens(user_id: str, chatbot_title: str):
                 "chatbot_title": chatbot_title,
                 "operations": operations,
                 "total_tokens": total,
-                "query_count": row["query_count"]
+                "query_count": row.get("query_count", 0) or 0
             }
         else:
             return {"error": f"Bot {chatbot_title} not found"}
@@ -187,17 +190,20 @@ def get_user_total_tokens(user_id: str):
         total_tokens = 0
         total_queries = 0
         
-        for row in result.data:
-            bot = row["chatbot_title"]
+        res_data = getattr(result, "data", [])
+        for row in res_data:
+            bot = row.get("chatbot_title")
+            if not bot: continue
+            
             operations = {
-                "file_upload": row["file_upload_tokens"],
-                "raw_text": row["raw_text_tokens"],
-                "qa_pairs": row["qa_pairs_tokens"],
-                "web_crawl": row["web_crawl_tokens"],
-                "ask_query": row["ask_query_tokens"]
+                "file_upload": row.get("file_upload_tokens", 0) or 0,
+                "raw_text": row.get("raw_text_tokens", 0) or 0,
+                "qa_pairs": row.get("qa_pairs_tokens", 0) or 0,
+                "web_crawl": row.get("web_crawl_tokens", 0) or 0,
+                "ask_query": row.get("ask_query_tokens", 0) or 0
             }
             bot_total_tokens = sum(operations.values())
-            bot_query_count = row["query_count"]
+            bot_query_count = row.get("query_count", 0) or 0
             
             bots[bot] = {
                 "operations": operations,

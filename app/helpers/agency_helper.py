@@ -1,6 +1,7 @@
 """Helper functions for White-Label Agency logic."""
 from typing import Dict, Optional, Any
 from app.supabase import get_admin_supabase_client
+from app.helpers.credit_manager import CreditManager
 import logging
 from datetime import datetime
 
@@ -56,22 +57,24 @@ def check_usage_limits(user_id: str, chatbot_id: str = None) -> Dict[str, Any]:
     """
     supabase = get_admin_supabase_client()
     
-    # 1. Check User Quota
+    # 0. Get user info (Quota and Agency)
     user_res = (
         supabase.table("registered_users")
         .select("message_quota, agency_id")
         .eq("id", user_id)
         .execute()
     )
-    
-    if not user_res.data:
-        return {"allowed": False, "reason": "User not found"}
+    user_data = user_res.data[0] if user_res.data else {}
+    agency_id = user_data.get("agency_id")
+
+    # 1. Check User Credits (Platform/Purchased)
+    allowed, reason = CreditManager.has_sufficient_credits(user_id, "messages", 1)
+    if not allowed:
+        # Fallback to legacy field for backward compatibility or if no balance entry exists
+        if user_data.get("message_quota", 0) > 0:
+            return {"allowed": True, "agency_id": agency_id}
         
-    user = user_res.data[0]
-    agency_id = user.get("agency_id")
-    
-    if user["message_quota"] <= 0:
-        return {"allowed": False, "reason": "User message quota reached", "agency_id": agency_id}
+        return {"allowed": False, "reason": reason, "agency_id": agency_id}
     
     # 2. Check Agency Pool
     if agency_id:
@@ -85,7 +88,6 @@ def check_usage_limits(user_id: str, chatbot_id: str = None) -> Dict[str, Any]:
         if pool_res.data:
             pool = pool_res.data[0]
             # Agency tracking is "soft limit" - we don't stop service, but we'll track overage later.
-            # However, for chatbots count, it might be a hard limit if specified.
             pass
 
     return {"allowed": True, "agency_id": agency_id}
@@ -115,10 +117,15 @@ async def track_and_log_usage(
     user = user_res.data[0]
     agency_id = user.get("agency_id")
     
-    # 2. Update User Quota (Hard Limit)
-    supabase.table("registered_users").update({
-        "message_quota": max(0, user["message_quota"] - amount)
-    }).eq("id", user_id).execute()
+    # 2. Update User Quota / Credits
+    # Try CreditManager (purchased credits)
+    consumed = CreditManager.consume_credits(user_id, "messages", amount)
+    
+    if not consumed:
+        # Fallback to legacy message_quota in registered_users
+        supabase.table("registered_users").update({
+            "message_quota": max(0, user["message_quota"] - amount)
+        }).eq("id", user_id).execute()
     
     # 3. Update Agency Pool (Soft Limit)
     if agency_id:

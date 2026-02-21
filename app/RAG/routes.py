@@ -44,6 +44,7 @@ from app.helpers.agency_helper import (
     track_and_log_usage, 
     validate_api_key_v2
 )
+from app.helpers.credit_manager import CreditManager
 
 _browser = None
 _playwright = None
@@ -200,7 +201,7 @@ async def create_chatbot_api(
 ):
     """Create (or return existing) API key for a chatbot with category and description."""
     user_id = current_user["id"]
-    chatbot_title_lower = chatbot_title.lower()
+    chatbot_title_lower = chatbot_title.strip().lower()
 
     try:
         from app.supabase import get_admin_supabase_client
@@ -241,27 +242,10 @@ async def create_chatbot_api(
         agency_info = get_user_agency_info(user_id)
         agency_id = agency_info["id"] if agency_info else None
         
-        if agency_id:
-            # Check agency-level chatbot limit (Soft limit with overage)
-            pool = agency_info.get("agency_pools")
-            if pool and pool[0]["current_chatbots"] >= pool[0]["limit_chatbots"]:
-                # We track overage but allow creation (per requirements)
-                pass
-
-        # Check if user already has 5 bots (Original Hard Limit - can be customized later per agency plan)
-        all_user_bots = (
-            supabase.table("chatbot_configs")
-            .select("chatbot_title")
-            .eq("user_id", user_id)
-            .execute()
-        )
-
-        current_bot_count = len(all_user_bots.data)
-        if current_bot_count >= 5:
-            raise HTTPException(
-                status_code=403,
-                detail=f"You already have {current_bot_count} chatbots. Maximum limit is 5. Please delete a chatbot before creating a new one."
-            )
+        # Check if user can create another chatbot (dynamic limit based on plan)
+        allowed, reason = CreditManager.can_create_chatbot(user_id)
+        if not allowed:
+            raise HTTPException(status_code=403, detail=reason)
 
         api_key = "snb_" + "".join(
             secrets.choice(string.ascii_letters + string.digits) for _ in range(32)
@@ -294,9 +278,16 @@ async def create_chatbot_api(
         }
         supabase.table("chatbot_configs").insert(config_data).execute()
         
-        # Increment Agency Pool chatbot count
+        # Increment Agency Pool chatbot count (Soft Limit tracking)
         if agency_id:
-            supabase.rpc("increment_agency_chatbots", {"agency_id_param": agency_id}).execute()
+            try:
+                # We can update the pool directly if we don't have an increment RPC
+                pool_res = supabase.table("agency_pools").select("current_chatbots").eq("agency_id", agency_id).execute()
+                if pool_res.data:
+                    current = pool_res.data[0]["current_chatbots"]
+                    supabase.table("agency_pools").update({"current_chatbots": current + 1}).eq("agency_id", agency_id).execute()
+            except Exception as e:
+                logger.error(f"Error incrementing agency chatbot pool: {e}")
 
         # Insert into chatbot_appearance
         appearance_data = {
@@ -941,9 +932,13 @@ async def fetch_and_index(
     api_key = get_api_key(user_id, chatbot_title)
     if not api_key:
         raise HTTPException(
-            status_code=403,
             detail=f"No active API key found for chatbot '{chatbot_title}'"
         )
+
+    # 0. Check Training Credits
+    allowed, reason = CreditManager.has_sufficient_credits(user_id, "training", 1)
+    if not allowed:
+        raise HTTPException(status_code=403, detail=reason)
 
     # ============================================================
     # STEP 1: Scrape Content using Spider.cloud (Primary Method)
@@ -1050,12 +1045,16 @@ async def fetch_and_index(
             chatbot_title=chatbot_title,
         )
 
+        tokens_used = result["tokens_used"]
         update_tokens(
             user_id=user_id,
             chatbot_title=chatbot_title,
             operation_type="web_crawl",
-            tokens_used=result["tokens_used"]
+            tokens_used=tokens_used
         )
+        
+        # Deduct Training Credits
+        CreditManager.consume_credits(user_id, "training", tokens_used)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
@@ -1122,7 +1121,7 @@ async def ask(request: QueryRequest):
         
         # Add messages to history
         add_message(conversation_id, "user", request.query)
-        add_message(conversation_id, "bot", result["response"])
+        add_message(conversation_id, "ai", result["response"])
 
         # 3. Track and Log Usage (Dual-Level)
         await track_and_log_usage(
@@ -1133,7 +1132,7 @@ async def ask(request: QueryRequest):
         )
 
         return {
-            "response": result["response"],
+            "answer": result["response"],
             "conversation_id": conversation_id,
             "tokens_used": result.get("tokens_used", 0)
         }
@@ -1289,7 +1288,7 @@ def get_user_chatbots(current_user: dict = Depends(get_current_user)):
             .execute()
         )
         
-        chatbots_data = chatbots_response.data
+        chatbots_data = getattr(chatbots_response, "data", []) or []
 
         if not chatbots_data:
             return {
@@ -1309,7 +1308,7 @@ def get_user_chatbots(current_user: dict = Depends(get_current_user)):
             .execute()
         )
         
-        appearance_map = {item["chatbot_title"]: item for item in appearance_response.data}
+        appearance_map = {item["chatbot_title"]: item for item in (getattr(appearance_response, "data", []) or []) if item.get("chatbot_title")}
 
         # Fetch token usage and query count summary for each bot
         from app.RAG.token_tracker import get_user_total_tokens
@@ -1346,6 +1345,7 @@ def get_user_chatbots(current_user: dict = Depends(get_current_user)):
         }
 
     except Exception as e:
+        logger.error(f"Error in get_user_chatbots: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch chatbots: {str(e)}")
 
 # ------------------ Get Single Chatbot ------------------ #
@@ -1356,7 +1356,7 @@ def get_user_chatbot_details(
 ):
     """Get detailed information for a single chatbot, including appearance and usage data."""
     user_id = current_user["id"]
-    normalized_title = request.chatbot_title.strip()
+    normalized_title = request.chatbot_title.strip().lower() # Normalize to lower as well
 
     if not normalized_title:
         raise HTTPException(status_code=400, detail="chatbot_title cannot be empty")
@@ -1375,7 +1375,7 @@ def get_user_chatbot_details(
             .execute()
         )
 
-        chatbot_data = chatbot_response.data
+        chatbot_data = getattr(chatbot_response, "data", None)
 
         if not chatbot_data:
             raise HTTPException(status_code=404, detail=f"Chatbot '{normalized_title}' not found for this user")
@@ -1390,7 +1390,10 @@ def get_user_chatbot_details(
             .execute()
         )
 
-        appearance_data = appearance_response.data or {}
+        # maybe_single() returns the object directly in .data or None
+        appearance_data = getattr(appearance_response, "data", {}) or {}
+        if not isinstance(appearance_data, dict):
+            appearance_data = {}
 
         # Fetch token usage and query count summary for this bot
         from app.RAG.token_tracker import get_user_total_tokens
@@ -1415,4 +1418,5 @@ def get_user_chatbot_details(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error fetching chatbot details for '{normalized_title}': {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch chatbot '{normalized_title}': {str(e)}")

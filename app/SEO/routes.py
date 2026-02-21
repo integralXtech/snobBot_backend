@@ -2,9 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
 
 from app.RAG.auth_utils import get_current_user
+from app.helpers.spider_client import discover_links_spider
 from app.SEO.models import GenerateFAQSRequest, SEOJobResponse, SEOJobDetailResponse, FAQResult, FAQItem
 from app.SEO.service import start_seo_job
 from app.supabase import get_admin_supabase_client
+from app.helpers.credit_manager import CreditManager
 
 seo_router = APIRouter(prefix="/seo", tags=["SEO Generator"])
 
@@ -28,6 +30,11 @@ async def generate_faqs(
     Otherwise, it scans the single page.
     """
     try:
+        # 0. Check Credits
+        allowed, reason = CreditManager.has_sufficient_credits(current_user["id"], "faq", 1)
+        if not allowed:
+             raise HTTPException(status_code=403, detail=reason)
+
         job_id = await start_seo_job(current_user["id"], request.url)
         
         # Return initial pending state

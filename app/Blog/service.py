@@ -7,6 +7,7 @@ from datetime import datetime
 from app.supabase import get_admin_supabase_client
 from app.helpers.spider_client import scrape_url_spider
 from app.Blog.models import GeneratedBlog
+from app.helpers.credit_manager import CreditManager
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,11 @@ async def generate_blog_ideas(user_id: str, url: str) -> (str, List[str], int):
     Scrapes URL and generates blog topic ideas.
     Returns: (db_record_id, list_of_titles, tokens_used)
     """
+    # 0. Check Credits
+    allowed, reason = CreditManager.has_sufficient_credits(user_id, "blog_ideas", 1)
+    if not allowed:
+        raise ValueError(reason)
+
     supabase = get_admin_supabase_client()
     
     # 1. Scrape Content
@@ -82,6 +88,9 @@ Content:
         
         record_id = db_res.data[0]["id"]
         
+        # 4. Consume Credit
+        CreditManager.consume_credits(user_id, "blog_ideas", 1)
+        
         return record_id, titles, tokens
 
     except Exception as e:
@@ -93,6 +102,11 @@ async def generate_full_blog(user_id: str, title: str, custom_prompt: str = None
     Generates a full blog post.
     Returns: (db_record_id, GeneratedBlog, tokens_used)
     """
+    # 0. Check Credits
+    allowed, reason = CreditManager.has_sufficient_credits(user_id, "blog_creation", 1)
+    if not allowed:
+        raise ValueError(reason)
+
     supabase = get_admin_supabase_client()
     
     instructions = custom_prompt if custom_prompt else f"Write a comprehensive blog post about: {title}"
@@ -151,6 +165,9 @@ async def generate_full_blog(user_id: str, title: str, custom_prompt: str = None
         }).execute()
         
         record_id = db_res.data[0]["id"]
+        
+        # 4. Consume Credit
+        CreditManager.consume_credits(user_id, "blog_creation", 1)
         
         return record_id, blog_obj, tokens
         
