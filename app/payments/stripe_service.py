@@ -1077,7 +1077,18 @@ async def generate_agency_connect_url(user_id: str, redirect_uri: str, email: st
         state = f"{agency_id}:{email}"
     
     # Generate Stripe OAuth URL
-    url = f"https://connect.stripe.com/oauth/authorize?client_id={settings.stripe_connect_client_id}&response_type=code&scope=read_write&state={state}"
+    # IMPORTANT: We must include the redirect_uri explicitly so Stripe knows where to send the user back
+    import urllib.parse
+    encoded_redirect = urllib.parse.quote(redirect_uri)
+    
+    url = (
+        f"https://connect.stripe.com/oauth/authorize?"
+        f"client_id={settings.stripe_connect_client_id}&"
+        f"response_type=code&"
+        f"scope=read_write&"
+        f"state={state}&"
+        f"redirect_uri={encoded_redirect}"
+    )
     return url
 
 async def handle_agency_connect_callback(code: str, state: str) -> bool:

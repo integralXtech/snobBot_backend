@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from app.RAG.auth_utils import get_current_user
 from .stripe_service import (
     generate_agency_connect_url,
@@ -26,7 +27,12 @@ async def get_connect_url(
 ):
     """Generate Stripe Connect onboarding URL."""
     try:
-        url = await generate_agency_connect_url(current_user["id"], redirect_uri, email)
+        # Use our own backend callback as the redirect_uri for Stripe
+        # This MUST match what is in the Stripe Dashboard
+        from app.core.config import settings
+        backend_callback = f"{settings.backend_url}/api/payments/agency/callback"
+        
+        url = await generate_agency_connect_url(current_user["id"], backend_callback, email)
         return {"url": url}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -39,10 +45,16 @@ async def connect_callback(
     state: str, # agency_id passed as state
 ):
     """Handle Stripe Connect OAuth callback."""
+    from app.core.config import settings
+    
     success = await handle_agency_connect_callback(code, state)
     if not success:
-        raise HTTPException(status_code=500, detail="Failed to finalize Stripe Connect onboarding.")
-    return {"status": "success", "message": "Stripe Connect account linked successfully!"}
+        # Redirect to dashboard with error parameter
+        return RedirectResponse(url=f"{settings.frontend_url}/white-label/dashboard?stripe_error=true")
+        
+    # Redirect back to the white-label dashboard
+    # The frontend will know it's connected because it will re-fetch the agency settings
+    return RedirectResponse(url=f"{settings.frontend_url}/white-label/dashboard?stripe_connected=true")
 
 @agency_payments_router.post("/subscribe")
 async def subscribe_agency(
