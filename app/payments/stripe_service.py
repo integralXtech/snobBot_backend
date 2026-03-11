@@ -749,12 +749,6 @@ async def handle_webhook_event(event: Dict) -> None:
                     else:
                         supabase.table("agency_subscriptions").insert(sub_data).execute()
                     
-                    logger.info(f"✅ Agency subscription fulfilled successfully for user {user_id}")
-                except Exception as e:
-                    logger.error(f"❌ Error during agency subscription fulfillment: {str(e)}")
-            else:
-                logger.error(f"❌ Missing metadata in checkout session: {metadata}")
-                        
                     # 4. Record in Payment History
                     supabase.table("payment_history").insert({
                         "user_id": user_id,
@@ -770,6 +764,12 @@ async def handle_webhook_event(event: Dict) -> None:
                             "checkout_session_id": session.id
                         }
                     }).execute()
+
+                    logger.info(f"✅ Agency subscription fulfilled successfully for user {user_id}")
+                except Exception as e:
+                    logger.error(f"❌ Error during agency subscription fulfillment: {str(e)}")
+            else:
+                logger.error(f"❌ Missing metadata in checkout session: {metadata}")
 
     elif event_type == "invoice.payment_failed":
         invoice = event["data"]["object"]
