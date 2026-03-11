@@ -3,10 +3,13 @@
 import stripe
 import json
 import os
+import logging
 from datetime import datetime
 from typing import Optional, Dict, List
 from app.core.config import settings
 from app.supabase import get_admin_supabase_client
+
+logger = logging.getLogger(__name__)
 
 # Initialize Stripe with environment-aware key
 stripe.api_key = settings.stripe_secret_key
