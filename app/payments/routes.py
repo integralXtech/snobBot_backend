@@ -1,8 +1,11 @@
 """Payment API routes."""
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from typing import Optional, List
 import stripe
+
+logger = logging.getLogger(__name__)
 
 from app.RAG.auth_utils import get_current_user
 from app.core.config import settings
@@ -315,7 +318,6 @@ async def stripe_webhook(
     payload = await request.body()
     
     # 🔍 Debug Signature Issues
-    from app.main import logger
     secret = settings.stripe_webhook_secret or ""
     logger.info(f"🔔 Webhook received. Payload length: {len(payload)}")
     logger.info(f"Header Signature: {stripe_signature[:20]}..." if stripe_signature else "Header Signature: MISSING")
