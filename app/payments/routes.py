@@ -314,12 +314,19 @@ async def stripe_webhook(
     """Handle Stripe webhook events."""
     payload = await request.body()
     
+    # 🔍 Debug Signature Issues
+    from app.main import logger
+    secret = settings.stripe_webhook_secret or ""
+    logger.info(f"🔔 Webhook received. Payload length: {len(payload)}")
+    logger.info(f"Header Signature: {stripe_signature[:20]}..." if stripe_signature else "Header Signature: MISSING")
+    logger.info(f"Using Secret: {secret[:8]}...{secret[-4:]}" if secret else "Using Secret: EMPTY")
+
     try:
         # Verify webhook signature
         event = stripe.Webhook.construct_event(
             payload,
             stripe_signature,
-            settings.stripe_webhook_secret
+            secret
         )
         
         # Handle the event
@@ -327,8 +334,11 @@ async def stripe_webhook(
         
         return {"status": "success"}
     except ValueError:
+        logger.error("❌ Webhook error: Invalid payload")
         raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError:
+    except stripe.error.SignatureVerificationError as e:
+        logger.error(f"❌ Webhook error: Invalid signature. {str(e)}")
         raise HTTPException(status_code=400, detail="Invalid signature")
     except Exception as e:
+        logger.error(f"❌ Webhook error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Webhook error: {str(e)}")

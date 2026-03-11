@@ -696,22 +696,29 @@ async def handle_webhook_event(event: Dict) -> None:
             agency_id = metadata.get("agency_id")
             plan_id = metadata.get("plan_id")
             
+            logger.info(f"💰 Webhook: Agency subscription checkout session completed. Session: {session.get('id')}")
+            logger.info(f"Metadata: user_id={user_id}, agency_id={agency_id}, plan_id={plan_id}")
+
             if user_id and agency_id and plan_id:
-                print(f"💰 Webhook: Agency subscription completed for user {user_id}, agency {agency_id}")
-                
-                # 1. Get Agency Plan details
-                plan_res = supabase.table("agency_plans").select("*").eq("id", plan_id).execute()
-                if plan_res.data:
+                try:
+                    # 1. Get Agency Plan details
+                    plan_res = supabase.table("agency_plans").select("*").eq("id", plan_id).execute()
+                    if not plan_res.data:
+                        logger.error(f"❌ Agency plan {plan_id} not found for user {user_id}")
+                        return
+                    
                     plan = plan_res.data[0]
                     
                     # 2. Update user limits and agency affiliation
+                    logger.info(f"Updating user {user_id} with agency {agency_id} and plan {plan_id}")
                     supabase.table("registered_users").update({
                         "agency_id": agency_id,
                         "plan_id": plan_id
                     }).eq("id", user_id).execute()
 
-                    # Allocate credits
-                    supabase.rpc("increment_user_balance", {
+                    # Allocate credits via RPC
+                    logger.info(f"Calling increment_user_balance for user {user_id}")
+                    rpc_res = supabase.rpc("increment_user_balance", {
                         "target_user_id": user_id,
                         "add_messages_credits": plan.get("limit_messages", 0),
                         "add_training_credits": plan.get("limit_training_chars", 0),
@@ -727,7 +734,6 @@ async def handle_webhook_event(event: Dict) -> None:
                     import datetime
                     period_end = (datetime.datetime.utcnow() + datetime.timedelta(days=30)).isoformat()
                     
-                    # Check if already exists
                     existing_sub = supabase.table("agency_subscriptions").select("id").eq("customer_id", user_id).eq("agency_id", agency_id).execute()
                     
                     sub_data = {
@@ -742,6 +748,12 @@ async def handle_webhook_event(event: Dict) -> None:
                         supabase.table("agency_subscriptions").update(sub_data).eq("id", existing_sub.data[0]["id"]).execute()
                     else:
                         supabase.table("agency_subscriptions").insert(sub_data).execute()
+                    
+                    logger.info(f"✅ Agency subscription fulfilled successfully for user {user_id}")
+                except Exception as e:
+                    logger.error(f"❌ Error during agency subscription fulfillment: {str(e)}")
+            else:
+                logger.error(f"❌ Missing metadata in checkout session: {metadata}")
                         
                     # 4. Record in Payment History
                     supabase.table("payment_history").insert({
