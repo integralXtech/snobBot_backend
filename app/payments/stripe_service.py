@@ -53,22 +53,44 @@ def validate_coupon_for_plan(coupon_code: str, plan_id: str) -> Optional[Dict]:
     return None
 
 
-def get_plan_by_id(plan_id: str) -> Optional[Dict]:
-    """Get plan details by ID."""
+async def get_plan_by_id(plan_id: str) -> Optional[Dict]:
+    """Get plan details by ID (Check plans.json first, then database agency_plans)."""
+    # 1. Check plans.json
     plans = load_plans()
     for plan in plans:
         if plan["id"] == plan_id:
             return plan
-    # Fallback to addons
-    return get_addon_by_id(plan_id)
-
-
-def get_addon_by_id(addon_id: str) -> Optional[Dict]:
-    """Get addon details by ID."""
+            
+    # 2. Check addons in plans.json
     addons = load_addons()
     for addon in addons:
-        if addon["id"] == addon_id:
+        if addon["id"] == plan_id:
             return addon
+            
+    # 3. Check database (agency_plans)
+    try:
+        supabase = get_admin_supabase_client()
+        res = supabase.table("agency_plans").select("*").eq("id", plan_id).execute()
+        if res.data:
+            plan_data = res.data[0]
+            return {
+                "id": plan_data["id"],
+                "name": plan_data["name"],
+                "price": plan_data["price"],
+                "limits": {
+                    "blog_ideas_credits": plan_data.get("limit_blog_ideas", 0),
+                    "faq_credits": plan_data.get("limit_faqs", 0),
+                    "blog_creation_credits": plan_data.get("limit_blog_creation", 0),
+                    "chatbot_messages_credits": plan_data.get("limit_messages", 0),
+                    "chatbot_training_credits": plan_data.get("limit_training_chars", 0),
+                    "chatbot_count": plan_data.get("limit_chatbots", 0),
+                    "white_label": False
+                },
+                "is_agency_plan": True
+            }
+    except Exception as e:
+        logger.error(f"Error fetching agency plan {plan_id}: {e}")
+        
     return None
 
 
@@ -78,17 +100,18 @@ async def allocate_user_credits(user_id: str, plan_id: str, is_renewal: bool = F
     Supports renewal logic (rollover for training credits) and stacking.
     """
     try:
+        logger.info(f"🔄 Starting credit allocation for user {user_id} (Plan: {plan_id}, Renewal: {is_renewal})")
         supabase = get_admin_supabase_client()
-        plan = get_plan_by_id(plan_id)
+        plan = await get_plan_by_id(plan_id)
         
         if not plan:
-            print(f"Error: Plan '{plan_id}' not found for allocation.")
+            logger.error(f"❌ Error: Plan '{plan_id}' not found for allocation.")
             return False
             
         limits = plan.get("limits", {})
         
         # Call Postgres function via RPC for atomic allocation
-        supabase.rpc("increment_user_balance", {
+        rpc_params = {
             "target_user_id": user_id,
             "add_blog_ideas": limits.get("blog_ideas_credits", 0),
             "add_faq": limits.get("faq_credits", 0),
@@ -98,11 +121,19 @@ async def allocate_user_credits(user_id: str, plan_id: str, is_renewal: bool = F
             "add_chatbot_count": limits.get("chatbot_count", 0),
             "set_white_label": limits.get("white_label", False),
             "is_renewal": is_renewal
-        }).execute()
+        }
         
+        logger.info(f"📤 Calling RPC increment_user_balance with params: {rpc_params}")
+        rpc_res = supabase.rpc("increment_user_balance", rpc_params).execute()
+        
+        if hasattr(rpc_res, "error") and rpc_res.error:
+             logger.error(f"❌ RPC increment_user_balance failed for {user_id}: {rpc_res.error}")
+             return False
+
+        logger.info(f"✅ Successfully allocated credits for user {user_id} (Plan: {plan_id})")
         return True
     except Exception as e:
-        print(f"Exception during credit allocation: {str(e)}")
+        logger.error(f"❌ Exception during credit allocation for {user_id}: {str(e)}", exc_info=True)
         return False
 
 
@@ -299,7 +330,7 @@ async def subscribe_to_plan(user_id: str, email: str, plan_id: str, coupon_code:
     supabase = get_admin_supabase_client()
     
     # Get plan details
-    plan = get_plan_by_id(plan_id)
+    plan = await get_plan_by_id(plan_id)
     if not plan:
         raise ValueError(f"Plan '{plan_id}' not found")
 
@@ -540,7 +571,7 @@ async def get_active_subscriptions(user_id: str) -> List[Dict]:
     
     active_subs = []
     for sub in result.data:
-        plan = get_plan_by_id(sub["plan_id"])
+        plan = await get_plan_by_id(sub["plan_id"])
         active_subs.append({
             "id": sub["id"],
             "plan_id": sub["plan_id"],
@@ -679,15 +710,19 @@ async def handle_webhook_event(event: Dict) -> None:
             # Allocate credits if plan_id is identified
             if plan_id:
                 # Security/Logic Fix: Verify if an active subscription for this user and plan exists in DB
-                # or if it was just Created (for one-time/initial buys)
+                # CHECK BOTH TABLES (Snobbot Subscriptions vs Agency Subscriptions)
                 sub_check = supabase.table("subscriptions").select("id").eq("user_id", user_id).eq("plan_id", plan_id).eq("status", "active").execute()
                 
+                if not sub_check.data:
+                    # Check agency subscriptions table
+                    sub_check = supabase.table("agency_subscriptions").select("id").eq("customer_id", user_id).eq("plan_id", plan_id).eq("status", "active").execute()
+
                 if sub_check.data:
                     # Detect if this is a renewal cycle or a new purchase/stack
                     is_renewal = invoice.get("billing_reason") == "subscription_cycle"
                     await allocate_user_credits(user_id, plan_id, is_renewal=is_renewal)
                 else:
-                    print(f"⚠️ Webhook Warning: Skipping credit allocation for user {user_id}. No active subscription found in database for plan '{plan_id}'.")
+                    logger.warning(f"⚠️ Webhook Warning: Skipping credit allocation for user {user_id}. No active subscription found in either table for plan '{plan_id}'.")
     
     elif event_type == "checkout.session.completed":
         session = event["data"]["object"]
@@ -970,7 +1005,7 @@ async def preview_upgrade_proration(user_id: str, new_plan_id: str) -> Dict:
     supabase = get_admin_supabase_client()
     
     # 1. Get Plan Details
-    plan = get_plan_by_id(new_plan_id)
+    plan = await get_plan_by_id(new_plan_id)
     if not plan: raise ValueError("Plan not found")
     
     price_id = plan["stripe_price_id_live"] if settings.is_production else plan["stripe_price_id_test"]

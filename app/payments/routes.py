@@ -194,7 +194,7 @@ async def validate_coupon_route(
                 "message": "Invalid or expired coupon code for this plan"
             }
             
-        plan = get_plan_by_id(request.plan_id)
+        plan = await get_plan_by_id(request.plan_id)
         if not plan:
             raise HTTPException(status_code=404, detail="Plan not found")
             
