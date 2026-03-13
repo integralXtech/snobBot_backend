@@ -635,19 +635,106 @@ async def get_user_usage(user_id: str) -> Dict:
 
 async def handle_webhook_event(event: Dict) -> None:
     """Handle Stripe webhook events."""
+    from datetime import datetime, timedelta, timezone as tz  # local import to ensure no shadowing
     supabase = get_admin_supabase_client()
     
     event_type = event["type"]
+    logger.info(f"📨 Webhook event received: {event_type}")
     
-    if event_type == "customer.subscription.updated":
+    # ─────────────────────────────────────────────────────────────
+    # PRIMARY CREDIT ALLOCATION: checkout.session.completed
+    # This is the MAIN trigger for granting credits after purchase.
+    # ─────────────────────────────────────────────────────────────
+    if event_type == "checkout.session.completed":
+        session = event["data"]["object"]
+        session_id = session.get("id")
+        payment_status = session.get("payment_status")
+        metadata = session.get("metadata") or {}
+        
+        user_id = metadata.get("user_id")
+        plan_id = metadata.get("plan_id")
+        agency_id = metadata.get("agency_id")
+        session_type = metadata.get("type")
+
+        logger.info(f"🎯 checkout.session.completed — session={session_id}, payment_status={payment_status}")
+        logger.info(f"   user_id={user_id}, plan_id={plan_id}, agency_id={agency_id}, type={session_type}")
+
+        if payment_status != "paid":
+            logger.warning(f"⚠️ Skipping fulfillment — payment_status is '{payment_status}', not 'paid'")
+            return
+
+        if not user_id or not plan_id:
+            logger.error(f"❌ Missing user_id or plan_id in session metadata: {metadata}")
+            return
+
+        # Idempotency: skip if already fulfilled
+        existing = supabase.table("payment_history").select("id").filter(
+            "metadata->>checkout_session_id", "eq", session_id
+        ).execute()
+        if existing.data:
+            logger.info(f"ℹ️ Session {session_id} already fulfilled. Skipping duplicate.")
+            return
+
+        # ── ALLOCATE CREDITS ──
+        logger.info(f"📈 Allocating credits for user {user_id} on plan {plan_id}...")
+        success = await allocate_user_credits(user_id, plan_id, is_renewal=False)
+        if success:
+            logger.info(f"✅ Credits SUCCESSFULLY allocated for user {user_id} (plan: {plan_id})")
+        else:
+            logger.error(f"❌ Credit allocation FAILED for user {user_id} (plan: {plan_id})")
+            return
+
+        # ── AGENCY-SPECIFIC: link user to agency ──
+        if session_type == "agency_subscription" and agency_id:
+            logger.info(f"🏢 Linking user {user_id} to agency {agency_id}")
+            supabase.table("registered_users").update({
+                "agency_id": agency_id,
+                "plan_id": plan_id
+            }).eq("id", user_id).execute()
+
+            period_end = (datetime.now(tz.utc) + timedelta(days=30)).isoformat()
+            sub_data = {
+                "customer_id": user_id, "plan_id": plan_id, "agency_id": agency_id,
+                "status": "active", "current_period_end": period_end
+            }
+            existing_sub = supabase.table("agency_subscriptions").select("id").eq(
+                "customer_id", user_id
+            ).eq("agency_id", agency_id).execute()
+            if existing_sub.data:
+                supabase.table("agency_subscriptions").update(sub_data).eq(
+                    "id", existing_sub.data[0]["id"]
+                ).execute()
+            else:
+                supabase.table("agency_subscriptions").insert(sub_data).execute()
+
+        # ── LOG PAYMENT ──
+        supabase.table("payment_history").insert({
+            "user_id": user_id,
+            "stripe_payment_intent_id": session.get("payment_intent"),
+            "amount": session.get("amount_total", 0),
+            "currency": session.get("currency", "usd"),
+            "status": "succeeded",
+            "description": f"Checkout: {plan_id}",
+            "payment_type": "subscription",
+            "metadata": {
+                "plan_id": plan_id,
+                "agency_id": agency_id,
+                "checkout_session_id": session_id,
+                "type": session_type
+            }
+        }).execute()
+
+        logger.info(f"🎉 SESSION FULLY FULFILLED: {session_id}")
+
+    elif event_type == "customer.subscription.updated":
         subscription = event["data"]["object"]
         user_id = subscription["metadata"].get("user_id")
-        
         if user_id:
+            now_ts = datetime.now().timestamp()
             supabase.table("subscriptions").update({
                 "status": subscription.get("status"),
-                "current_period_start": datetime.fromtimestamp(subscription.get("current_period_start", datetime.utcnow().timestamp())).isoformat(),
-                "current_period_end": datetime.fromtimestamp(subscription.get("current_period_end", datetime.utcnow().timestamp())).isoformat(),
+                "current_period_start": datetime.fromtimestamp(subscription.get("current_period_start", now_ts)).isoformat(),
+                "current_period_end": datetime.fromtimestamp(subscription.get("current_period_end", now_ts)).isoformat(),
                 "cancel_at_period_end": subscription.get("cancel_at_period_end", False)
             }).eq("stripe_subscription_id", subscription.get("id")).execute()
     
@@ -662,100 +749,63 @@ async def handle_webhook_event(event: Dict) -> None:
         user_id = invoice.get("metadata", {}).get("user_id")
         plan_id = invoice.get("metadata", {}).get("plan_id")
         
-        # If not in invoice metadata, try subscription metadata
+        # Try subscription metadata if not in invoice
         if not user_id or not plan_id:
             subscription_id = invoice.get("subscription")
             if subscription_id:
-                subscription = stripe.Subscription.retrieve(subscription_id)
-                user_id = user_id or subscription.metadata.get("user_id")
-                plan_id = plan_id or subscription.metadata.get("plan_id")
+                try:
+                    subscription = stripe.Subscription.retrieve(subscription_id)
+                    user_id = user_id or subscription.metadata.get("user_id")
+                    plan_id = plan_id or subscription.metadata.get("plan_id")
+                except Exception:
+                    pass
+
+        logger.info(f"💵 invoice.payment_succeeded — user_id={user_id}, plan_id={plan_id}")
+
+        if user_id and plan_id:
+            logger.info(f"📈 Allocating credits via invoice event for user {user_id} (plan: {plan_id})")
+            billing_reason = invoice.get("billing_reason", "")
+            is_renewal = billing_reason in ["subscription_cycle", "subscription_create", "manual"]
+            success = await allocate_user_credits(user_id, plan_id, is_renewal=is_renewal)
+            if success:
+                logger.info(f"✅ Credits allocated via invoice for user {user_id}")
+            else:
+                logger.error(f"❌ Credit allocation failed via invoice for user {user_id}")
 
         if user_id:
-            # Check for duplicate logs (e.g. if already logged in subscribe_to_plan)
-            invoice_id = invoice.get("id")
-            if invoice_id:
-                # Use filter with JSON path for metadata
-                existing = supabase.table("payment_history").select("id").filter("metadata->>invoice_id", "eq", invoice_id).execute()
-                if existing.data:
-                    print(f"ℹ️ Webhook: Skipping duplicate payment log for invoice {invoice_id}")
-                    # Still allocate credits if needed, as the allocate_user_credits check is separate
-                else:
-                    # Extract discount info
-                    discount_total = 0
-                    coupon_id = None
-                    if getattr(invoice, "total_discount_amounts", None):
-                        discount_total = sum(d.amount for d in invoice.total_discount_amounts)
-                        if getattr(invoice, "discounts", None) and len(invoice.discounts) > 0:
-                            coupon_id = getattr(invoice.discounts[0], "coupon", None)
-                            if hasattr(coupon_id, "id"): 
-                                coupon_id = coupon_id.id
-
-                    # Log payment history
-                    supabase.table("payment_history").insert({
-                        "user_id": user_id,
-                        "stripe_payment_intent_id": invoice.get("payment_intent"),
-                        "stripe_charge_id": invoice.get("charge"),
-                        "amount": invoice.get("amount_paid", 0),
-                        "currency": invoice.get("currency", "usd"),
-                        "status": "succeeded",
-                        "description": f"Subscription payment - {invoice.get('description', '')}",
-                        "payment_type": "subscription",
-                        "metadata": {
-                            "invoice_id": invoice_id, 
-                            "plan_id": plan_id,
-                            "coupon_code": coupon_id,
-                            "discount_amount": discount_total,
-                            "original_amount": getattr(invoice, "subtotal", 0)
-                        }
-                    }).execute()
-            else:
-                # Fallback for invoices without ID (rare) or non-invoice payments
+            invoice_id = invoice.get("id", "")
+            try:
                 supabase.table("payment_history").insert({
                     "user_id": user_id,
                     "stripe_payment_intent_id": invoice.get("payment_intent"),
-                    "stripe_charge_id": invoice.get("charge"),
                     "amount": invoice.get("amount_paid", 0),
                     "currency": invoice.get("currency", "usd"),
                     "status": "succeeded",
-                    "description": f"Subscription payment - {invoice.get('description', '')}",
+                    "description": f"Invoice payment",
                     "payment_type": "subscription",
-                    "metadata": {"plan_id": plan_id}
+                    "metadata": {"invoice_id": invoice_id, "plan_id": plan_id}
                 }).execute()
-
-            # Allocate credits if plan_id is identified
-            if plan_id:
-                logger.info(f"📈 STARTING CREDIT INCREMENT: Found plan_id '{plan_id}' for user {user_id}")
-                # Security: We trust the metadata here because it's set by our own backend 
-                # during subscription creation. Removing the DB active-check to avoid
-                # race conditions where Stripe sends the webhook before our insertion is complete.
-                is_renewal = invoice.get("billing_reason") in ["subscription_create", "subscription_cycle", "manual"]
-                logger.info(f"💰 STRIPE WEBHOOK: Processing successful payment for user: {user_id}")
-                success = await allocate_user_credits(user_id, plan_id, is_renewal=is_renewal)
-                if success:
-                    logger.info(f"🎉 FINAL SUCCESS: Credits incremented for user {user_id} via Webhook.")
-                else:
-                    logger.error(f"❌ Webhook Error: Failed to allocate credits for user {user_id} on plan {plan_id}")
-    
-    elif event_type == "checkout.session.completed":
-        session = event["data"]["object"]
-        logger.info(f"🔔 Webhook: Checkout session completed. Session: {session.get('id')}")
-        await fulfill_checkout_session(session.get("id"))
+            except Exception as log_err:
+                logger.warning(f"⚠️ Could not log payment history: {log_err}")
 
     elif event_type == "invoice.payment_failed":
         invoice = event["data"]["object"]
         user_id = invoice.get("metadata", {}).get("user_id")
-        
         if user_id:
-            supabase.table("payment_history").insert({
-                "user_id": user_id,
-                "stripe_payment_intent_id": invoice.get("payment_intent"),
-                "amount": invoice["amount_due"],
-                "currency": invoice["currency"],
-                "status": "failed",
-                "description": f"Failed subscription payment - {invoice.get('description', '')}",
-                "payment_type": "subscription",
-                "metadata": {"invoice_id": invoice["id"]}
-            }).execute()
+            try:
+                supabase.table("payment_history").insert({
+                    "user_id": user_id,
+                    "stripe_payment_intent_id": invoice.get("payment_intent"),
+                    "amount": invoice.get("amount_due", 0),
+                    "currency": invoice.get("currency", "usd"),
+                    "status": "failed",
+                    "description": "Failed subscription payment",
+                    "payment_type": "subscription",
+                    "metadata": {"invoice_id": invoice.get("id")}
+                }).execute()
+            except Exception as log_err:
+                logger.warning(f"⚠️ Could not log failed payment: {log_err}")
+
 
 async def get_payment_history(user_id: str) -> List[Dict]:
     """Get user's payment history from the database."""
