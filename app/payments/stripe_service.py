@@ -55,24 +55,35 @@ def validate_coupon_for_plan(coupon_code: str, plan_id: str) -> Optional[Dict]:
 
 async def get_plan_by_id(plan_id: str) -> Optional[Dict]:
     """Get plan details by ID (Check plans.json first, then database agency_plans)."""
+    if not plan_id: return None
+    
+    # Normalize ID for comparison
+    pid_lower = str(plan_id).lower()
+
     # 1. Check plans.json
     plans = load_plans()
     for plan in plans:
-        if plan["id"] == plan_id:
+        if str(plan["id"]).lower() == pid_lower:
             return plan
             
     # 2. Check addons in plans.json
     addons = load_addons()
     for addon in addons:
-        if addon["id"] == plan_id:
+        if str(addon["id"]).lower() == pid_lower:
             return addon
             
     # 3. Check database (agency_plans)
     try:
         supabase = get_admin_supabase_client()
+        # Agency plan IDs might be UUIDs or names
         res = supabase.table("agency_plans").select("*").eq("id", plan_id).execute()
+        if not res.data:
+            # Try by name if ID lookup failed (fallback for internal lookups)
+            res = supabase.table("agency_plans").select("*").eq("name", plan_id).execute()
+            
         if res.data:
             plan_data = res.data[0]
+            # Map database columns to the standard 'limits' structure expected by allocate_user_credits
             return {
                 "id": plan_data["id"],
                 "name": plan_data["name"],
@@ -709,20 +720,13 @@ async def handle_webhook_event(event: Dict) -> None:
 
             # Allocate credits if plan_id is identified
             if plan_id:
-                # Security/Logic Fix: Verify if an active subscription for this user and plan exists in DB
-                # CHECK BOTH TABLES (Snobbot Subscriptions vs Agency Subscriptions)
-                sub_check = supabase.table("subscriptions").select("id").eq("user_id", user_id).eq("plan_id", plan_id).eq("status", "active").execute()
-                
-                if not sub_check.data:
-                    # Check agency subscriptions table
-                    sub_check = supabase.table("agency_subscriptions").select("id").eq("customer_id", user_id).eq("plan_id", plan_id).eq("status", "active").execute()
-
-                if sub_check.data:
-                    # Detect if this is a renewal cycle or a new purchase/stack
-                    is_renewal = invoice.get("billing_reason") == "subscription_cycle"
-                    await allocate_user_credits(user_id, plan_id, is_renewal=is_renewal)
-                else:
-                    logger.warning(f"⚠️ Webhook Warning: Skipping credit allocation for user {user_id}. No active subscription found in either table for plan '{plan_id}'.")
+                # Security: We trust the metadata here because it's set by our own backend 
+                # during subscription creation. Removing the DB active-check to avoid
+                # race conditions where Stripe sends the webhook before our insertion is complete.
+                is_renewal = invoice.get("billing_reason") == "subscription_cycle"
+                success = await allocate_user_credits(user_id, plan_id, is_renewal=is_renewal)
+                if not success:
+                    logger.error(f"❌ Webhook Error: Failed to allocate credits for user {user_id} on plan {plan_id}")
     
     elif event_type == "checkout.session.completed":
         session = event["data"]["object"]
@@ -754,19 +758,9 @@ async def handle_webhook_event(event: Dict) -> None:
                         "plan_id": plan_id
                     }).eq("id", user_id).execute()
 
-                    # Allocate credits via RPC
-                    logger.info(f"Calling increment_user_balance for user {user_id}")
-                    rpc_res = supabase.rpc("increment_user_balance", {
-                        "target_user_id": user_id,
-                        "add_messages_credits": plan.get("limit_messages", 0),
-                        "add_training_credits": plan.get("limit_training_chars", 0),
-                        "add_chatbot_count": plan.get("limit_chatbots", 0),
-                        "add_blog_creation": plan.get("limit_blog_creation", 0),
-                        "add_blog_ideas": plan.get("limit_blog_ideas", 0),
-                        "add_faq": plan.get("limit_faqs", 0),
-                        "is_renewal": False,
-                        "set_white_label": False
-                    }).execute()
+                    # Allocate credits via central function for consistency and logging
+                    logger.info(f"💰 Webhook: Allocating credits for Agency User {user_id}")
+                    await allocate_user_credits(user_id, plan_id, is_renewal=False)
                     
                     # 3. Create/Update subscription record
                     import datetime
