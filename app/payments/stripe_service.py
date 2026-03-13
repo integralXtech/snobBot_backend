@@ -4,7 +4,7 @@ import stripe
 import json
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List
 from app.core.config import settings
 from app.supabase import get_admin_supabase_client
@@ -111,7 +111,9 @@ async def allocate_user_credits(user_id: str, plan_id: str, is_renewal: bool = F
     Supports renewal logic (rollover for training credits) and stacking.
     """
     try:
-        logger.info(f"🔄 Starting credit allocation for user {user_id} (Plan: {plan_id}, Renewal: {is_renewal})")
+        logger.info(f"--------------------------------------------------")
+        logger.info(f"🔄 CREDIT MANAGER: Starting allocation for {user_id}")
+        logger.info(f"Plan: {plan_id}, Renewal: {is_renewal}")
         supabase = get_admin_supabase_client()
         plan = await get_plan_by_id(plan_id)
         
@@ -120,21 +122,23 @@ async def allocate_user_credits(user_id: str, plan_id: str, is_renewal: bool = F
             return False
             
         limits = plan.get("limits", {})
+        logger.info(f"📊 Plan limits found for {plan_id}: {limits}")
         
         # Call Postgres function via RPC for atomic allocation
         rpc_params = {
             "target_user_id": user_id,
-            "add_blog_ideas": limits.get("blog_ideas_credits", 0),
-            "add_faq": limits.get("faq_credits", 0),
-            "add_blog_creation": limits.get("blog_creation_credits", 0),
-            "add_training_credits": limits.get("chatbot_training_credits", 0),
-            "add_messages_credits": limits.get("chatbot_messages_credits", 0),
-            "add_chatbot_count": limits.get("chatbot_count", 0),
-            "set_white_label": limits.get("white_label", False),
-            "is_renewal": is_renewal
+            "add_blog_ideas": int(limits.get("blog_ideas_credits", 0)),
+            "add_faq": int(limits.get("faq_credits", 0)),
+            "add_blog_creation": int(limits.get("blog_creation_credits", 0)),
+            "add_training_credits": int(limits.get("chatbot_training_credits", 0)),
+            "add_messages_credits": int(limits.get("chatbot_messages_credits", 0)),
+            "add_chatbot_count": int(limits.get("chatbot_count", 0)),
+            "set_white_label": bool(limits.get("white_label", False)),
+            "is_renewal": bool(is_renewal)
         }
         
-        logger.info(f"📤 Calling RPC increment_user_balance with params: {rpc_params}")
+        logger.info(f"📤 Calling RPC increment_user_balance for user {user_id}")
+        logger.info(f"Parameters: {rpc_params}")
         rpc_res = supabase.rpc("increment_user_balance", rpc_params).execute()
         
         if hasattr(rpc_res, "error") and rpc_res.error:
@@ -720,88 +724,22 @@ async def handle_webhook_event(event: Dict) -> None:
 
             # Allocate credits if plan_id is identified
             if plan_id:
+                logger.info(f"📈 STARTING CREDIT INCREMENT: Found plan_id '{plan_id}' for user {user_id}")
                 # Security: We trust the metadata here because it's set by our own backend 
                 # during subscription creation. Removing the DB active-check to avoid
                 # race conditions where Stripe sends the webhook before our insertion is complete.
-                is_renewal = invoice.get("billing_reason") == "subscription_cycle"
+                is_renewal = invoice.get("billing_reason") in ["subscription_create", "subscription_cycle", "manual"]
+                logger.info(f"💰 STRIPE WEBHOOK: Processing successful payment for user: {user_id}")
                 success = await allocate_user_credits(user_id, plan_id, is_renewal=is_renewal)
-                if not success:
+                if success:
+                    logger.info(f"🎉 FINAL SUCCESS: Credits incremented for user {user_id} via Webhook.")
+                else:
                     logger.error(f"❌ Webhook Error: Failed to allocate credits for user {user_id} on plan {plan_id}")
     
     elif event_type == "checkout.session.completed":
         session = event["data"]["object"]
-        metadata = session.get("metadata", {})
-        
-        # Check if this is an agency subscription
-        if metadata.get("type") == "agency_subscription":
-            user_id = metadata.get("user_id")
-            agency_id = metadata.get("agency_id")
-            plan_id = metadata.get("plan_id")
-            
-            logger.info(f"💰 Webhook: Agency subscription checkout session completed. Session: {session.get('id')}")
-            logger.info(f"Metadata: user_id={user_id}, agency_id={agency_id}, plan_id={plan_id}")
-
-            if user_id and agency_id and plan_id:
-                try:
-                    # 1. Get Agency Plan details
-                    plan_res = supabase.table("agency_plans").select("*").eq("id", plan_id).execute()
-                    if not plan_res.data:
-                        logger.error(f"❌ Agency plan {plan_id} not found for user {user_id}")
-                        return
-                    
-                    plan = plan_res.data[0]
-                    
-                    # 2. Update user limits and agency affiliation
-                    logger.info(f"Updating user {user_id} with agency {agency_id} and plan {plan_id}")
-                    supabase.table("registered_users").update({
-                        "agency_id": agency_id,
-                        "plan_id": plan_id
-                    }).eq("id", user_id).execute()
-
-                    # Allocate credits via central function for consistency and logging
-                    logger.info(f"💰 Webhook: Allocating credits for Agency User {user_id}")
-                    await allocate_user_credits(user_id, plan_id, is_renewal=False)
-                    
-                    # 3. Create/Update subscription record
-                    import datetime
-                    period_end = (datetime.datetime.utcnow() + datetime.timedelta(days=30)).isoformat()
-                    
-                    existing_sub = supabase.table("agency_subscriptions").select("id").eq("customer_id", user_id).eq("agency_id", agency_id).execute()
-                    
-                    sub_data = {
-                        "customer_id": user_id,
-                        "plan_id": plan_id,
-                        "agency_id": agency_id,
-                        "status": "active",
-                        "current_period_end": period_end
-                    }
-                    
-                    if existing_sub.data:
-                        supabase.table("agency_subscriptions").update(sub_data).eq("id", existing_sub.data[0]["id"]).execute()
-                    else:
-                        supabase.table("agency_subscriptions").insert(sub_data).execute()
-                    
-                    # 4. Record in Payment History
-                    supabase.table("payment_history").insert({
-                        "user_id": user_id,
-                        "stripe_payment_intent_id": session.get("payment_intent"),
-                        "amount": session.get("amount_total", 0),
-                        "currency": session.get("currency", "usd"),
-                        "status": "succeeded",
-                        "description": f"Agency Subscription: {plan['name']}",
-                        "payment_type": "subscription",
-                        "metadata": {
-                            "plan_id": plan_id,
-                            "agency_id": agency_id,
-                            "checkout_session_id": session.id
-                        }
-                    }).execute()
-
-                    logger.info(f"✅ Agency subscription fulfilled successfully for user {user_id}")
-                except Exception as e:
-                    logger.error(f"❌ Error during agency subscription fulfillment: {str(e)}")
-            else:
-                logger.error(f"❌ Missing metadata in checkout session: {metadata}")
+        logger.info(f"🔔 Webhook: Checkout session completed. Session: {session.get('id')}")
+        await fulfill_checkout_session(session.get("id"))
 
     elif event_type == "invoice.payment_failed":
         invoice = event["data"]["object"]
@@ -1184,8 +1122,7 @@ async def handle_agency_connect_callback(code: str, state: str) -> bool:
             email = fallback_email
             status = "Pending"
 
-        import datetime
-        connected_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        connected_at = datetime.now(timezone.utc).isoformat()
         
         # We try to update the specific columns, but fallback to branding_settings if they don't exist
         update_data = {
@@ -1424,21 +1361,106 @@ async def bill_agency_overage(agency_id: str, amount_cents: int, description: st
     )
     
     return invoice.id
+async def fulfill_checkout_session(session_id: str) -> bool:
+    """
+    Fulfill a Checkout Session: Allocate credits, update tables, and log payment.
+    Called from both webhook (reliable) and success page (fast/self-healing).
+    Idempotent: Checks payment_history to prevent double fulfillment.
+    """
+    try:
+        supabase = get_admin_supabase_client()
+        session = stripe.checkout.Session.retrieve(session_id)
+        
+        if session.payment_status != "paid":
+             logger.warning(f"⚠️ Fulfillment Skipped: Session {session_id} status is {session.payment_status}")
+             return False
+
+        metadata = session.get("metadata", {})
+        user_id = metadata.get("user_id")
+        plan_id = metadata.get("plan_id")
+        agency_id = metadata.get("agency_id")
+        session_type = metadata.get("type")
+
+        if not user_id or not plan_id:
+            logger.error(f"❌ Fulfillment Error: Missing user_id ({user_id}) or plan_id ({plan_id}) in session {session_id}")
+            return False
+
+        # Idempotency Check: Have we already processed this session?
+        existing = supabase.table("payment_history").select("id").filter("metadata->>checkout_session_id", "eq", session_id).execute()
+        if existing.data:
+            logger.info(f"ℹ️ Fulfillment: Session {session_id} already fulfilled. Skipping.")
+            return True
+
+        logger.info(f"🎯 FULFILLING SESSION: {session_id} for User {user_id} (Plan: {plan_id})")
+
+        # 1. Standard Plan Credits (Regular or Agency)
+        success = await allocate_user_credits(user_id, plan_id, is_renewal=False)
+        if not success:
+             logger.error(f"❌ Fulfillment Failed: Credit allocation failed for {user_id}")
+             return False
+
+        # 2. Case-Specific Updates (e.g. Agency Affiliation)
+        if session_type == "agency_subscription":
+            logger.info(f"🏢 Agency Fulfillment: Linking {user_id} to Agency {agency_id}")
+            # Update user limits and agency affiliation
+            supabase.table("registered_users").update({
+                "agency_id": agency_id,
+                "plan_id": plan_id
+            }).eq("id", user_id).execute()
+
+            # Update agency_subscriptions
+            period_end = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+            sub_data = {
+                "customer_id": user_id, "plan_id": plan_id, "agency_id": agency_id,
+                "status": "active", "current_period_end": period_end
+            }
+            # UPSERT logic
+            existing_sub = supabase.table("agency_subscriptions").select("id").eq("customer_id", user_id).eq("agency_id", agency_id).execute()
+            if existing_sub.data:
+                supabase.table("agency_subscriptions").update(sub_data).eq("id", existing_sub.data[0]["id"]).execute()
+            else:
+                supabase.table("agency_subscriptions").insert(sub_data).execute()
+
+        # 3. Log to Payment History
+        supabase.table("payment_history").insert({
+            "user_id": user_id,
+            "stripe_payment_intent_id": session.get("payment_intent"),
+            "amount": session.get("amount_total", 0),
+            "currency": session.get("currency", "usd"),
+            "status": "succeeded",
+            "description": f"Checkout Fulfillment: {plan_id}",
+            "payment_type": "subscription",
+            "metadata": {
+                "plan_id": plan_id,
+                "agency_id": agency_id,
+                "checkout_session_id": session_id,
+                "type": session_type
+            }
+        }).execute()
+
+        logger.info(f"✅ SESSION FULFILLED SUCCESSFULLY: {session_id}")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Error in fulfill_checkout_session: {str(e)}", exc_info=True)
+        return False
+
 async def get_checkout_session_details(session_id: str) -> Dict:
     """Retrieve details of a Checkout Session for the success page."""
     try:
+        # Proactively fulfill if successful but webhook hasn't arrived yet
+        # This provides a much better user experience
+        await fulfill_checkout_session(session_id)
+        
         session = stripe.checkout.Session.retrieve(session_id)
         metadata = session.get("metadata", {})
         
-        # Try to get a nicer plan name if possible
         plan_id = metadata.get("plan_id")
         plan_name = f"Plan: {plan_id}"
         
         if plan_id:
-            supabase = get_admin_supabase_client()
-            plan_res = supabase.table("agency_plans").select("name").eq("id", plan_id).execute()
-            if plan_res.data:
-                plan_name = plan_res.data[0]["name"]
+            plan = await get_plan_by_id(plan_id)
+            if plan: plan_name = plan.get("name", plan_name)
         
         return {
             "status": session.get("payment_status"),
@@ -1452,5 +1474,5 @@ async def get_checkout_session_details(session_id: str) -> Dict:
             "customer_email": session.get("customer_details", {}).get("email")
         }
     except Exception as e:
-        print(f"Error retrieving checkout session: {e}")
+        logger.error(f"Error retrieving checkout session: {e}")
         return None
