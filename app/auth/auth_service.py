@@ -60,84 +60,81 @@ async def ensure_user_in_database(user_data: Dict[str, Any]) -> Dict[str, Any]:
                     code="INSERT_NO_DATA"
                 )
 
-            new_user = insert_response.data[0]
+            user_record = insert_response.data[0]
+            is_new_user = True
+        else:
+            # User exists: Check if we need to force-update fields (fixing the Trigger Race Condition)
+            user_record = response.data[0]
+            is_new_user = False
+            updates = {}
+            
+            # 1. Check User Type
+            incoming_type = user_data.get('user_type')
+            if incoming_type and user_record.get('user_type') != incoming_type:
+                updates['user_type'] = incoming_type
+                
+            # 2. Check Agency ID
+            incoming_agency = user_data.get('agency_id')
+            if incoming_agency and user_record.get('agency_id') != incoming_agency:
+                updates['agency_id'] = incoming_agency
+                
+            if updates:
+                logger.info(f"Force-updating user {user_data['email']} with: {updates}")
+                update_res = supabase.table('registered_users').update(updates).eq('id', user_record['id']).execute()
+                if hasattr(update_res, "data") and update_res.data:
+                    user_record.update(updates)
 
-            # Auto-create a ZERO-credit balance row so CreditManager never crashes
-            # with "No credit record found". Actual credits are only granted after
-            # the user purchases a plan (handled by the Stripe webhook).
+        # ---------------------------------------------------------
+        # COMMON: Ensure user has a ZERO-credit balance record
+        # This fixes existing users who joined before the fix was added.
+        # ---------------------------------------------------------
+        try:
+            balance_check = supabase.table("user_usage_balances").select("user_id").eq("user_id", user_record['id']).execute()
+            if not balance_check.data:
+                supabase.table("user_usage_balances").insert({
+                    "user_id": user_record['id'],
+                    "chatbot_messages_credits_total": 0,
+                    "chatbot_messages_credits_used": 0,
+                    "chatbot_training_credits_total": 0,
+                    "chatbot_training_credits_used": 0,
+                    "chatbot_count_allowed": 0,
+                    "blog_creation_credits_total": 0,
+                    "blog_creation_credits_used": 0,
+                    "blog_ideas_credits_total": 0,
+                    "blog_ideas_credits_used": 0,
+                    "faq_credits_total": 0,
+                    "faq_credits_used": 0,
+                }).execute()
+                logger.info(f"Created missing zero-credit balance record for user {user_record['email']}")
+        except Exception as bal_err:
+            logger.error(f"Failed to create balance record for {user_record['email']}: {bal_err}")
+
+        # ---------------------------------------------------------
+        # NEW SIGNUP ONLY: Assign default agency plan
+        # ---------------------------------------------------------
+        if is_new_user and user_record.get('agency_id') and user_record.get('user_type') == 'user':
             try:
-                existing_balance = supabase.table("user_usage_balances").select("user_id").eq("user_id", new_user['id']).execute()
-                if not existing_balance.data:
-                    supabase.table("user_usage_balances").insert({
-                        "user_id": new_user['id'],
-                        "chatbot_messages_credits_total": 0,
-                        "chatbot_messages_credits_used": 0,
-                        "chatbot_training_credits_total": 0,
-                        "chatbot_training_credits_used": 0,
-                        "chatbot_count_allowed": 0,
-                        "blog_creation_credits_total": 0,
-                        "blog_creation_credits_used": 0,
-                        "blog_ideas_credits_total": 0,
-                        "blog_ideas_credits_used": 0,
-                        "faq_credits_total": 0,
-                        "faq_credits_used": 0,
+                # 1. Find a default plan for this agency
+                plans_res = supabase.table("agency_plans").select("*").eq("agency_id", user_record['agency_id']).eq("interval", "month").order("price").limit(1).execute()
+                if plans_res.data:
+                    default_plan = plans_res.data[0]
+                    # 2. Create subscription
+                    from datetime import datetime, timedelta
+                    expiry = (datetime.now() + timedelta(days=30)).isoformat()
+                    supabase.table("agency_subscriptions").insert({
+                        "agency_id": user_record['agency_id'],
+                        "customer_id": user_record['id'],
+                        "plan_id": default_plan['id'],
+                        "status": "active",
+                        "current_period_end": expiry
                     }).execute()
-                    logger.info(f"Created zero-credit balance record for new user {new_user['email']}")
-            except Exception as bal_err:
-                logger.error(f"Failed to create balance record for {new_user['email']}: {bal_err}")
-                # Don't fail registration if balance creation fails
-
-            # NEW: Assign default agency plan if user is a customer of an agency
-            if new_user.get('agency_id') and new_user.get('user_type') == 'user':
-                try:
-                    # 1. Find a default plan for this agency (e.g. cheapest monthly or containing 'Starter/Free' in name)
-                    plans_res = supabase.table("agency_plans").select("*").eq("agency_id", new_user['agency_id']).eq("interval", "month").order("price").limit(1).execute()
-                    if plans_res.data:
-                        default_plan = plans_res.data[0]
-                        # 2. Create subscription
-                        from datetime import datetime, timedelta
-                        expiry = datetime.now() + timedelta(days=30)
-                        sub_data = {
-                            "agency_id": new_user['agency_id'],
-                            "user_id": new_user['id'],
-                            "plan_id": default_plan['id'],
-                            "status": "active",
-                            "current_period_end": expiry.isoformat()
-                        }
-                        supabase.table("agency_subscriptions").insert(sub_data).execute()
-                        logger.info(f"Assigned default plan {default_plan['name']} to new customer {new_user['email']}")
-                except Exception as sub_err:
-                    logger.error(f"Failed to assign default agency plan: {str(sub_err)}")
-                    # Don't fail the whole registration if sub assignment fails
-
-            return success_response(
-                data={"user": new_user, "inserted": True},
-                message="User inserted successfully"
-            )
-
-        # User exists: Check if we need to force-update fields (fixing the Trigger Race Condition)
-        existing_user = response.data[0]
-        updates = {}
-        
-        # 1. Check User Type
-        incoming_type = user_data.get('user_type')
-        if incoming_type and existing_user.get('user_type') != incoming_type:
-            updates['user_type'] = incoming_type
-            
-        # 2. Check Agency ID
-        incoming_agency = user_data.get('agency_id')
-        if incoming_agency and existing_user.get('agency_id') != incoming_agency:
-            updates['agency_id'] = incoming_agency
-            
-        if updates:
-            logger.info(f"Force-updating user {user_data['email']} with: {updates}")
-            update_res = supabase.table('registered_users').update(updates).eq('id', existing_user['id']).execute()
-            if hasattr(update_res, "data") and update_res.data:
-                existing_user.update(updates)
+                    logger.info(f"Assigned default plan {default_plan['id']} to new user {user_record['email']}")
+            except Exception as sub_err:
+                logger.error(f"Failed to assign default agency plan: {str(sub_err)}")
 
         return success_response(
-            data={"user": existing_user, "inserted": False},
-            message="User already exists"
+            data={"user": user_record, "inserted": is_new_user},
+            message="User ensured in database"
         )
 
     except Exception as e:

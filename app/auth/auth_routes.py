@@ -117,6 +117,16 @@ async def login(user_data: LoginRequest):
 
     logger.info(f"User {user_data.email} logged in successfully")
 
+    # Ensure user records (like usage balances) exist in our DB
+    try:
+        await ensure_user_in_database({
+            "id": result["user"]["id"],
+            "email": result["user"]["email"],
+            "name": result["user"].get("user_metadata", {}).get("name", result["user"]["email"])
+        })
+    except Exception as e:
+        logger.error(f"Failed to ensure user in DB during login: {e}")
+
     return AuthResponse(
         success=True,
         message="Login successful",
