@@ -62,6 +62,31 @@ async def ensure_user_in_database(user_data: Dict[str, Any]) -> Dict[str, Any]:
 
             new_user = insert_response.data[0]
 
+            # Auto-create a ZERO-credit balance row so CreditManager never crashes
+            # with "No credit record found". Actual credits are only granted after
+            # the user purchases a plan (handled by the Stripe webhook).
+            try:
+                existing_balance = supabase.table("user_usage_balances").select("user_id").eq("user_id", new_user['id']).execute()
+                if not existing_balance.data:
+                    supabase.table("user_usage_balances").insert({
+                        "user_id": new_user['id'],
+                        "chatbot_messages_credits_total": 0,
+                        "chatbot_messages_credits_used": 0,
+                        "chatbot_training_credits_total": 0,
+                        "chatbot_training_credits_used": 0,
+                        "chatbot_count_allowed": 0,
+                        "blog_creation_credits_total": 0,
+                        "blog_creation_credits_used": 0,
+                        "blog_ideas_credits_total": 0,
+                        "blog_ideas_credits_used": 0,
+                        "faq_credits_total": 0,
+                        "faq_credits_used": 0,
+                    }).execute()
+                    logger.info(f"Created zero-credit balance record for new user {new_user['email']}")
+            except Exception as bal_err:
+                logger.error(f"Failed to create balance record for {new_user['email']}: {bal_err}")
+                # Don't fail registration if balance creation fails
+
             # NEW: Assign default agency plan if user is a customer of an agency
             if new_user.get('agency_id') and new_user.get('user_type') == 'user':
                 try:

@@ -28,8 +28,13 @@ async def create_ideation(
             "titles": titles,
             "tokens_used": tokens
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"create_ideation error for user {current_user['id']}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Blog ideation failed: {str(e)}")
 
 from datetime import datetime
 
@@ -62,8 +67,13 @@ async def create_blog(
             # We don't have created_at from service return, but we can query or just use current time for response
             "created_at": datetime.utcnow() 
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"create_blog error for user {current_user['id']}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Blog generation failed: {str(e)}")
 
 @blog_router.get(
     "/history",

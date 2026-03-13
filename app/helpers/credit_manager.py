@@ -72,9 +72,11 @@ class CreditManager:
             if not balances:
                 return False
             
-            new_used = balances.get(f"{col_base}_used", 0) + amount
+            used_col = f"{col_base}_used"
+            new_used = (balances.get(used_col, 0) or 0) + amount
+            
             supabase.table("user_usage_balances").update({
-                f"{col_base}_used": new_used
+                used_col: new_used
             }).eq("user_id", user_id).execute()
             
             return True
