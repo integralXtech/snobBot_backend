@@ -113,3 +113,29 @@ class UserUsageResponse(BaseModel):
 class StripeConfigResponse(BaseModel):
     publishable_key: str
     environment: str
+
+
+class SetupFreeTrialRequest(BaseModel):
+    payment_method_id: str
+
+
+class SetupFreeTrialResponse(BaseModel):
+    message: str
+    card_brand: str
+    card_last4: str
+    trial_ends_at: str
+
+
+class AgencySetupBillingRequest(BaseModel):
+    payment_method_id: str
+
+
+class AgencySetupBillingResponse(BaseModel):
+    message: str
+    card_brand: str
+    card_last4: str
+
+
+class ExpireFreeTrialRequest(BaseModel):
+    target_user_id: str
+    zero_out_balances: bool = True  # Also zero usage balances so limits are hit immediately

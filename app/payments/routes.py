@@ -1,6 +1,9 @@
 """Payment API routes."""
 
 import logging
+import json
+import os
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from typing import Optional, List
 import stripe
@@ -9,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 from app.RAG.auth_utils import get_current_user
 from app.core.config import settings
+from app.supabase import get_admin_supabase_client
 from .models import (
     AddCardRequest,
     AddCardResponse,
@@ -22,7 +26,12 @@ from .models import (
     PlansAndAddonsResponse,
     ValidateCouponRequest,
     ValidateCouponResponse,
-    StripeConfigResponse
+    StripeConfigResponse,
+    SetupFreeTrialRequest,
+    SetupFreeTrialResponse,
+    AgencySetupBillingRequest,
+    AgencySetupBillingResponse,
+    ExpireFreeTrialRequest,
 )
 from .stripe_service import (
     load_plans,
@@ -42,6 +51,14 @@ from .stripe_service import (
 )
 
 payments_router = APIRouter(prefix="/payments", tags=["payments"])
+
+
+def _load_free_trial_config() -> dict:
+    """Load free_trial section from plans.json."""
+    plans_path = os.path.join(os.path.dirname(__file__), "plans.json")
+    with open(plans_path, "r") as f:
+        data = json.load(f)
+    return data.get("free_trial", {})
 
 
 @payments_router.get("/config", response_model=StripeConfigResponse)
@@ -190,7 +207,7 @@ async def validate_coupon_route(
         
         if not coupon:
             return {
-                "valid": false,
+                "valid": False,
                 "message": "Invalid or expired coupon code for this plan"
             }
             
@@ -307,6 +324,160 @@ async def get_user_usage_route(current_user: dict = Depends(get_current_user)):
         return usage
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch user usage: {str(e)}")
+
+
+# ─────────────────────────────────────────────────────────────
+# FREE TRIAL ENDPOINTS
+# ─────────────────────────────────────────────────────────────
+
+@payments_router.post("/setup-free-trial", response_model=SetupFreeTrialResponse)
+async def setup_free_trial(
+    request: SetupFreeTrialRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Activate a 30-day free trial for a regular user.
+    Verifies the card via a $1 charge + immediate refund, then grants trial credits.
+    """
+    user_id = current_user["id"]
+    email = current_user["email"]
+    supabase = get_admin_supabase_client()
+
+    # 1. Verify the card ($1 charge + refund)
+    try:
+        card_result = await add_and_verify_card(user_id, email, request.payment_method_id)
+    except Exception as e:
+        err_type = type(e).__name__
+        if "CardError" in err_type:
+            raise HTTPException(status_code=400, detail=f"Card declined: {getattr(e, 'user_message', str(e))}")
+        raise HTTPException(status_code=500, detail=f"Payment error: {str(e)}")
+
+    # 2. Load trial quota from plans.json
+    trial_config = _load_free_trial_config()
+    limits = trial_config.get("regular_user", {}).get("limits", {})
+    duration_days = trial_config.get("regular_user", {}).get("duration_days", 30)
+
+    if not limits:
+        raise HTTPException(status_code=500, detail="Free trial configuration not found.")
+
+    # 3. Grant credits via RPC
+    rpc_params = {
+        "target_user_id": user_id,
+        "add_blog_ideas": int(limits.get("blog_ideas_credits", 0)),
+        "add_faq": int(limits.get("faq_credits", 0)),
+        "add_blog_creation": int(limits.get("blog_creation_credits", 0)),
+        "add_training_credits": int(limits.get("chatbot_training_credits", 0)),
+        "add_messages_credits": int(limits.get("chatbot_messages_credits", 0)),
+        "add_chatbot_count": int(limits.get("chatbot_count", 0)),
+        "set_white_label": bool(limits.get("white_label", False)),
+        "is_renewal": False
+    }
+    supabase.rpc("increment_user_balance", rpc_params).execute()
+
+    # 4. Create subscription record in DB
+    trial_ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
+    supabase.table("subscriptions").update({"status": "canceled"}).eq("user_id", user_id).execute()
+    supabase.table("subscriptions").insert({
+        "user_id": user_id,
+        "plan_id": "free_trial",
+        "stripe_customer_id": None,
+        "stripe_subscription_id": None,
+        "status": "active",
+        "current_period_start": datetime.now(timezone.utc).isoformat(),
+        "current_period_end": trial_ends_at.isoformat(),
+        "cancel_at_period_end": False
+    }).execute()
+
+    logger.info(f"✅ Free trial activated for user {user_id}, ends {trial_ends_at.isoformat()}")
+    return {
+        "message": "Free trial activated! Your $1 verification charge has been refunded.",
+        "card_brand": card_result["card_brand"],
+        "card_last4": card_result["card_last4"],
+        "trial_ends_at": trial_ends_at.isoformat()
+    }
+
+
+@payments_router.post("/agency-setup-billing", response_model=AgencySetupBillingResponse)
+async def agency_setup_billing(
+    request: AgencySetupBillingRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Verify an agency owner's card via $1 charge + refund and mark their
+    account as being in the 'agency_trial' setup phase.
+    """
+    user_id = current_user["id"]
+    email = current_user["email"]
+    supabase = get_admin_supabase_client()
+
+    # 1. Verify card ($1 charge + refund)
+    try:
+        card_result = await add_and_verify_card(user_id, email, request.payment_method_id)
+    except Exception as e:
+        err_type = type(e).__name__
+        if "CardError" in err_type:
+            raise HTTPException(status_code=400, detail=f"Card declined: {getattr(e, 'user_message', str(e))}")
+        raise HTTPException(status_code=500, detail=f"Payment error: {str(e)}")
+
+    # 2. Mark user's subscription as 'agency_trial' in DB
+    supabase.table("subscriptions").update({"status": "canceled"}).eq("user_id", user_id).execute()
+    supabase.table("subscriptions").insert({
+        "user_id": user_id,
+        "plan_id": "agency_trial",
+        "stripe_customer_id": None,
+        "stripe_subscription_id": None,
+        "status": "active",
+        "current_period_start": datetime.now(timezone.utc).isoformat(),
+        "current_period_end": None,
+        "cancel_at_period_end": False
+    }).execute()
+
+    logger.info(f"✅ Agency billing set up for user {user_id}. Card verified.")
+    return {
+        "message": "Card verified! Your $1 verification charge has been refunded. Your agency account is now active — set up your platform.",
+        "card_brand": card_result["card_brand"],
+        "card_last4": card_result["card_last4"],
+    }
+
+
+@payments_router.post("/expire-free-trial")
+async def expire_free_trial(
+    request: ExpireFreeTrialRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    ADMIN/TESTING ONLY: Immediately expire a user's free trial.
+    Sets their subscription status to 'canceled' and optionally zeros out usage balances.
+    """
+    supabase = get_admin_supabase_client()
+    target_user_id = request.target_user_id
+
+    # Cancel the active free trial subscription
+    supabase.table("subscriptions") \
+        .update({
+            "status": "canceled",
+            "current_period_end": datetime.now(timezone.utc).isoformat()
+        }) \
+        .eq("user_id", target_user_id) \
+        .in_("plan_id", ["free_trial", "agency_trial"]) \
+        .execute()
+
+    if request.zero_out_balances:
+        # Zero out the total limits so every feature is immediately locked
+        supabase.table("user_usage_balances").update({
+            "blog_ideas_credits_total": 0,
+            "faq_credits_total": 0,
+            "blog_creation_credits_total": 0,
+            "chatbot_messages_credits_total": 0,
+            "chatbot_training_credits_total": 0,
+            "chatbot_count_allowed": 0
+        }).eq("user_id", target_user_id).execute()
+
+    logger.info(f"🧪 Free trial expired for user {target_user_id} by admin {current_user['id']}")
+    return {
+        "message": f"Free trial for user {target_user_id} has been expired.",
+        "zero_out_balances": request.zero_out_balances
+    }
 
 
 @payments_router.post("/webhook")

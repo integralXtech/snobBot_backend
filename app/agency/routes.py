@@ -7,8 +7,32 @@ from .models import (
     CustomerCreate, TicketCreate
 )
 from typing import Dict, Any, List
+import json, os
 
 agency_router = APIRouter(prefix="/whitelabel", tags=["White Label Management"])
+
+
+def _load_free_trial_config() -> dict:
+    """Load free_trial section from plans.json."""
+    plans_path = os.path.join(os.path.dirname(__file__), "..", "payments", "plans.json")
+    with open(os.path.normpath(plans_path), "r") as f:
+        data = json.load(f)
+    return data.get("free_trial", {})
+
+
+def _is_agency_paid(user_id: str) -> bool:
+    """Return True if the user has an active paid agency subscription (not trial)."""
+    supabase = get_admin_supabase_client()
+    result = supabase.table("subscriptions") \
+        .select("plan_id") \
+        .eq("user_id", user_id) \
+        .eq("status", "active") \
+        .execute()
+    trial_plan_ids = {"free_trial", "agency_trial"}
+    for sub in (result.data or []):
+        if sub.get("plan_id") not in trial_plan_ids:
+            return True
+    return False
 
 async def get_agency_by_owner(user_id: str, raise_error: bool = True):
     supabase = get_admin_supabase_client()
@@ -141,20 +165,32 @@ async def disconnect_stripe(current_user: dict = Depends(get_current_user)):
     
     return {"status": "success", "message": "Stripe account disconnected."}
 
-# --- Plan Management ---
-
-from .models import AgencyPlanCreate, AgencyPlanUpdate, AgencyPlanResponse, CustomerCreate
-from typing import List
 
 @agency_router.post("/customers")
 async def create_customer(
     customer_data: CustomerCreate,
     current_user: dict = Depends(get_current_user)
 ):
-    """Create a new customer for the agency."""
+    """Create a new customer for the agency.
+    
+    - In TRIAL mode: max 1 test client, auto-assigned free trial quota, no plan selection.
+    - In PAID mode: unlimited clients, plan selected by agency owner.
+    """
     agency = await get_agency_by_owner(current_user["id"])
     supabase = get_admin_supabase_client()
-    
+    is_paid = _is_agency_paid(current_user["id"])
+
+    if not is_paid:
+        # Trial mode: enforce test_account_limit
+        trial_config = _load_free_trial_config()
+        test_limit = trial_config.get("agency", {}).get("test_account_limit", 1)
+        existing = supabase.table("registered_users").select("id").eq("agency_id", agency["id"]).execute()
+        if len(existing.data or []) >= test_limit:
+            raise HTTPException(
+                status_code=403,
+                detail="Trial limit reached. Upgrade to a paid plan to onboard real clients."
+            )
+
     # 1. Create User in Supabase Auth
     try:
         user_res = supabase.auth.admin.create_user({
@@ -163,13 +199,11 @@ async def create_customer(
             "user_metadata": {"name": customer_data.name},
             "email_confirm": True
         })
-        # Note: supabase-py returns a User object or similar response
         new_user = user_res.user
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to create user: {str(e)}")
         
-    # 2. Add to registered_users with proper isolation
-    # We can use our service or direct insert. Direct insert is clearer here for custom fields.
+    # 2. Add to registered_users
     try:
         supabase.table("registered_users").insert({
             "id": new_user.id,
@@ -177,13 +211,31 @@ async def create_customer(
             "name": customer_data.name,
             "approved": True,
             "agency_id": agency["id"],
-            "user_type": "customer"
+            "user_type": "customer",
+            "is_test_client": not is_paid,
         }).execute()
     except Exception as e:
-        # Rollback auth creation? For now just error.
         raise HTTPException(status_code=500, detail=f"Failed to register customer profile: {str(e)}")
+
+    if not is_paid:
+        # 3. Auto-assign free trial quota to this test client via RPC
+        trial_config = _load_free_trial_config()
+        quota = trial_config.get("agency", {}).get("test_account_quota", {})
+        rpc_params = {
+            "target_user_id": new_user.id,
+            "add_blog_ideas": int(quota.get("blog_ideas_credits", 0)),
+            "add_faq": int(quota.get("faq_credits", 0)),
+            "add_blog_creation": int(quota.get("blog_creation_credits", 0)),
+            "add_training_credits": int(quota.get("chatbot_training_credits", 0)),
+            "add_messages_credits": int(quota.get("chatbot_messages_credits", 0)),
+            "add_chatbot_count": int(quota.get("chatbot_count", 0)),
+            "set_white_label": bool(quota.get("white_label", False)),
+            "is_renewal": False
+        }
+        supabase.rpc("increment_user_balance", rpc_params).execute()
+        return {"message": "Test client created with trial quota", "id": new_user.id, "is_test_client": True}
         
-    return {"message": "Customer created successfully", "id": new_user.id}
+    return {"message": "Customer created successfully", "id": new_user.id, "is_test_client": False}
 
 @agency_router.get("/plans", response_model=List[AgencyPlanResponse])
 async def list_plans(current_user: dict = Depends(get_current_user)):
@@ -393,24 +445,32 @@ async def delete_topup(
 async def list_public_plans(domain: str = None, agency_id: str = None):
     """
     List plans for a specific agency (Publicly accessible).
-    Used by the customer-facing pricing page.
+    Returns empty list with is_live=False if agency has not upgraded to a paid plan.
     """
     supabase = get_admin_supabase_client()
     target_agency_id = agency_id
     
     if not target_agency_id and domain:
-        # Resolve domain to agency_id
         clean_domain = domain.split(":")[0]
-        # Try custom domain
-        res = supabase.table("agencies").select("id").eq("custom_domain", clean_domain).execute()
+        res = supabase.table("agencies").select("id, owner_id").eq("custom_domain", clean_domain).execute()
         if res.data:
             target_agency_id = res.data[0]["id"]
+            owner_id = res.data[0].get("owner_id")
+        else:
+            owner_id = None
+    elif target_agency_id:
+        res = supabase.table("agencies").select("owner_id").eq("id", target_agency_id).execute()
+        owner_id = res.data[0].get("owner_id") if res.data else None
+    else:
+        owner_id = None
         
     if not target_agency_id:
-         # If no agency found, return empty list instead of error to avoid breaking UI
-         return []
+        return []
 
-    # Fetch active plans only
+    # Gate: only show plans if agency is on a paid plan
+    if owner_id and not _is_agency_paid(owner_id):
+        return []  # Frontend should treat empty as "coming soon"
+
     res = supabase.table("agency_plans").select("*").eq("agency_id", target_agency_id).eq("is_active", True).execute()
     return res.data
 
@@ -446,21 +506,28 @@ async def upload_logo(
 async def list_public_topups(domain: str = None, agency_id: str = None):
     """
     List top-up packages for a specific agency (Publicly accessible).
-    Used by the customer-facing pricing page.
+    Returns empty list if agency is not yet on a paid plan.
     """
     supabase = get_admin_supabase_client()
     target_agency_id = agency_id
+    owner_id = None
     
     if not target_agency_id and domain:
-        # Resolve domain to agency_id
         clean_domain = domain.split(":")[0]
-        # Try custom domain
-        res = supabase.table("agencies").select("id").eq("custom_domain", clean_domain).execute()
+        res = supabase.table("agencies").select("id, owner_id").eq("custom_domain", clean_domain).execute()
         if res.data:
             target_agency_id = res.data[0]["id"]
+            owner_id = res.data[0].get("owner_id")
+    elif target_agency_id:
+        res = supabase.table("agencies").select("owner_id").eq("id", target_agency_id).execute()
+        owner_id = res.data[0].get("owner_id") if res.data else None
         
     if not target_agency_id:
-         return []
+        return []
+
+    # Gate: only show topups if agency is on a paid plan
+    if owner_id and not _is_agency_paid(owner_id):
+        return []
 
     res = supabase.table("agency_topups").select("*").eq("agency_id", target_agency_id).execute()
     return res.data

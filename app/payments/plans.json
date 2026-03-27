@@ -546,6 +546,33 @@
             "active": true
         }
     ],
+    "free_trial": {
+        "regular_user": {
+            "duration_days": 30,
+            "limits": {
+                "chatbot_count": 1,
+                "chatbot_messages_credits": 100,
+                "chatbot_training_credits": 50000,
+                "blog_ideas_credits": 20,
+                "faq_credits": 20,
+                "blog_creation_credits": 20,
+                "white_label": false
+            }
+        },
+        "agency": {
+            "duration_days": 30,
+            "test_account_limit": 1,
+            "test_account_quota": {
+                "chatbot_count": 1,
+                "chatbot_messages_credits": 100,
+                "chatbot_training_credits": 50000,
+                "blog_ideas_credits": 20,
+                "faq_credits": 20,
+                "blog_creation_credits": 20,
+                "white_label": false
+            }
+        }
+    },
     "coupons": [
         {
             "id": "TEST_WL_900",
