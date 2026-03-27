@@ -1,21 +1,31 @@
+import logging
 from fastapi import Header, HTTPException
 from app.supabase import get_supabase_client
+from app.core.config import settings
 import requests
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 def get_current_user(authorization: str = Header(...)):
     if not authorization.startswith("Bearer "):
+        logger.warning("Invalid authorization header format")
         raise HTTPException(status_code=401, detail="Invalid auth header")
 
     token = authorization.split(" ")[1]
-    supabase = get_supabase_client()
-
+    
+    # Use settings directly instead of trying to read from client object
+    # to avoid attribute errors and ensure we use the correct keys.
     resp = requests.get(
-        f"{supabase.supabase_url}/auth/v1/user",
-        headers={"Authorization": f"Bearer {token}", "apikey": supabase.supabase_key}
+        f"{settings.supabase_url}/auth/v1/user",
+        headers={
+            "Authorization": f"Bearer {token}", 
+            "apikey": settings.supabase_anon_key
+        }
     )
 
     if resp.status_code != 200:
+        logger.warning(f"Token validation failed with status {resp.status_code}: {resp.text}")
         raise HTTPException(status_code=401, detail="Invalid token")
 
     return resp.json()
