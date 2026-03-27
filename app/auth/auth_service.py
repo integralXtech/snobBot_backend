@@ -233,6 +233,7 @@ async def register_user(register_data: RegisterRequest) -> Dict[str, Any]:
 
 async def login_user(login_data: LoginRequest) -> Dict[str, Any]:
     try:
+        logger.info(f"Attempting login for user: {login_data.email}")
         supabase = get_supabase_client()
 
         # Step 1: Authenticate with Supabase Auth
