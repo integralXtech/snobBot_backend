@@ -102,8 +102,12 @@ import json
 # because allow_origins=["*"] is not permitted with allow_credentials=True
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[], # Must be empty if allow_origin_regex is used
-    allow_origin_regex=r"https?://.*",  # Truly allow all origins (dev only)
+    allow_origins=[
+        "https://snobbots-frontend.vercel.app",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
