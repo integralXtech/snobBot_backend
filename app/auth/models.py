@@ -44,6 +44,7 @@ class UserResponse(BaseModel):
     created_at: Optional[datetime] = None
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
+    plan_id: Optional[str] = None
 
 
 class AuthResponse(BaseModel):
