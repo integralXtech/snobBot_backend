@@ -334,6 +334,21 @@ async def login_user(login_data: LoginRequest) -> Dict[str, Any]:
             db_user = user_result.data
 
         # Step 4: Success response
+        # Robust token extraction (handles object vs dict and potential None session)
+        access_token = None
+        refresh_token = None
+        
+        if hasattr(auth_response, 'session') and auth_response.session:
+            access_token = getattr(auth_response.session, 'access_token', None)
+            refresh_token = getattr(auth_response.session, 'refresh_token', None)
+            
+            # If getattr failed, try dict access in case it's a model
+            if not access_token and isinstance(auth_response.session, dict):
+                access_token = auth_response.session.get('access_token')
+                refresh_token = auth_response.session.get('refresh_token')
+        
+        logger.info(f"Login success for {auth_response.user.email}. Token found: {bool(access_token)}")
+
         user_dict = {
             "id": user_id,
             "email": auth_response.user.email,
@@ -341,8 +356,8 @@ async def login_user(login_data: LoginRequest) -> Dict[str, Any]:
             "approved": db_user.get("approved", True),
             "user_type": db_user.get("user_type"),
             "created_at": db_user.get("created_at"),
-            "access_token": getattr(auth_response.session, "access_token", None),
-            "refresh_token": getattr(auth_response.session, "refresh_token", None)
+            "access_token": access_token,
+            "refresh_token": refresh_token
         }
 
         return {
