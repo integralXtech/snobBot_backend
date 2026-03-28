@@ -376,15 +376,15 @@ async def setup_free_trial(
         except Exception as e:
             logger.warning(f"⚠️ Non-fatal: Could not cancel existing subs: {str(e)}")
 
-        # Insert new record
-        try:
+            # Insert new record
+            trial_starts_at = datetime.now(timezone.utc)
             supabase.table("subscriptions").insert({
                 "user_id": user_id,
                 "plan_id": "free_trial",
-                "stripe_customer_id": None,
-                "stripe_subscription_id": None,
+                "stripe_customer_id": card_result["stripe_customer_id"],
+                "stripe_subscription_id": f"trial_{user_id[:8]}", # Dummy trial ID
                 "status": "active",
-                "current_period_start": datetime.now(timezone.utc).isoformat(),
+                "current_period_start": trial_starts_at.isoformat(),
                 "current_period_end": trial_ends_at.isoformat(),
                 "cancel_at_period_end": False
             }).execute()
@@ -445,14 +445,15 @@ async def agency_setup_billing(
         # 2. Mark user's subscription as 'agency_trial' in DB
         logger.info("Step 2/3: Creating subscription record...")
         try:
+            trial_starts_at = datetime.now(timezone.utc)
             supabase.table("subscriptions").update({"status": "canceled"}).eq("user_id", user_id).execute()
             supabase.table("subscriptions").insert({
                 "user_id": user_id,
                 "plan_id": "agency_trial",
-                "stripe_customer_id": None,
-                "stripe_subscription_id": None,
+                "stripe_customer_id": card_result["stripe_customer_id"],
+                "stripe_subscription_id": f"trial_agency_{user_id[:8]}", # Dummy trial ID
                 "status": "active",
-                "current_period_start": datetime.now(timezone.utc).isoformat(),
+                "current_period_start": trial_starts_at.isoformat(),
                 "current_period_end": None,
                 "cancel_at_period_end": False
             }).execute()

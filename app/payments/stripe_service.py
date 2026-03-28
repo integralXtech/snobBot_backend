@@ -280,6 +280,7 @@ async def add_and_verify_card(user_id: str, email: str, payment_method_id: str) 
     result = supabase.table("payment_methods").insert(card_data).execute()
     
     return {
+        "stripe_customer_id": customer_id,
         "card_brand": payment_method.card.brand,
         "card_last4": payment_method.card.last4,
         "verified": True
