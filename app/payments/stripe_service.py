@@ -25,9 +25,11 @@ def load_content() -> Dict:
         return json.load(f)
 
 
-def load_plans() -> List[Dict]:
+def load_plans(include_inactive: bool = False) -> List[Dict]:
     """Load plans from plans.json file."""
     data = load_content()
+    if include_inactive:
+        return data["plans"]
     return [plan for plan in data["plans"] if plan["active"]]
 
 
@@ -60,8 +62,8 @@ async def get_plan_by_id(plan_id: str) -> Optional[Dict]:
     # Normalize ID for comparison
     pid_lower = str(plan_id).lower()
 
-    # 1. Check plans.json
-    plans = load_plans()
+    # 1. Check plans.json (include inactive just in case they are internal)
+    plans = load_plans(include_inactive=True)
     for plan in plans:
         if str(plan["id"]).lower() == pid_lower:
             return plan
@@ -73,12 +75,24 @@ async def get_plan_by_id(plan_id: str) -> Optional[Dict]:
             return addon
             
     # 3. Check database (agency_plans)
+    import uuid
     try:
         supabase = get_admin_supabase_client()
-        # Agency plan IDs might be UUIDs or names
-        res = supabase.table("agency_plans").select("*").eq("id", plan_id).execute()
-        if not res.data:
-            # Try by name if ID lookup failed (fallback for internal lookups)
+        
+        # Validate if it's a UUID before querying by ID to avoid PostgREST 400 errors
+        is_uuid = False
+        try:
+            uuid.UUID(str(plan_id))
+            is_uuid = True
+        except ValueError:
+            is_uuid = False
+
+        res = None
+        if is_uuid:
+            res = supabase.table("agency_plans").select("*").eq("id", plan_id).execute()
+        
+        # Fallback to name lookup if not a UUID or not found by ID
+        if not res or not res.data:
             res = supabase.table("agency_plans").select("*").eq("name", plan_id).execute()
             
         if res.data:
