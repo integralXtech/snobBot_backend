@@ -27,6 +27,56 @@
             "active": true
         },
         {
+            "id": "free_trial",
+            "name": "30-Day Free Trial",
+            "price": 0,
+            "currency": "usd",
+            "interval": "month",
+            "features": [
+                "1 AI Chatbot",
+                "100 Messages/month",
+                "50K Characters Training Data",
+                "20 Blog Ideas",
+                "20 FAQs",
+                "20 Blog Creations"
+            ],
+            "limits": {
+                "blog_ideas_credits": 20,
+                "faq_credits": 20,
+                "blog_creation_credits": 20,
+                "chatbot_messages_credits": 100,
+                "chatbot_training_credits": 50000,
+                "chatbot_count": 1,
+                "white_label": false
+            },
+            "stripe_price_id_test": null,
+            "stripe_price_id_live": null,
+            "active": false
+        },
+        {
+            "id": "agency_trial",
+            "name": "Agency Trial",
+            "price": 0,
+            "currency": "usd",
+            "interval": "month",
+            "features": [
+                "Agency Setup Phase",
+                "1 Test Client Included"
+            ],
+            "limits": {
+                "blog_ideas_credits": 0,
+                "faq_credits": 0,
+                "blog_creation_credits": 0,
+                "chatbot_messages_credits": 0,
+                "chatbot_training_credits": 0,
+                "chatbot_count": 0,
+                "white_label": true
+            },
+            "stripe_price_id_test": null,
+            "stripe_price_id_live": null,
+            "active": false
+        },
+        {
             "id": "launch_yearly",
             "name": "Launch (Yearly)",
             "price": 421.20,
