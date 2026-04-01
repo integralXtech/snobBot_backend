@@ -465,7 +465,34 @@ async def list_public_plans(domain: str = None, agency_id: str = None):
         owner_id = None
         
     if not target_agency_id:
-        return []
+        # 🟢 Fallback: Serve Platform Plans from plans.json if no agency is found
+        try:
+            from app.payments.stripe_service import load_plans
+            platform_plans = load_plans()
+            
+            mapped_plans = []
+            for p in platform_plans:
+                limits = p.get("limits", {})
+                mapped_plans.append({
+                    "id": p["id"],
+                    "agency_id": "platform",
+                    "name": p["name"],
+                    "price": p["price"],
+                    "currency": p.get("currency", "USD"),
+                    "interval": p.get("interval", "month"),
+                    "description": "\n".join(p.get("features", [])),
+                    "limit_chatbots": limits.get("chatbot_count", 1),
+                    "limit_messages": limits.get("chatbot_messages_credits", 1000),
+                    "limit_training_chars": limits.get("chatbot_training_credits", 100000),
+                    "limit_blog_creation": limits.get("blog_creation_credits", 0),
+                    "limit_blog_ideas": limits.get("blog_ideas_credits", 0),
+                    "limit_faqs": limits.get("faq_credits", 0),
+                    "is_active": p.get("active", True)
+                })
+            return mapped_plans
+        except Exception as e:
+            print(f"Error loading platform plans for public fallback: {e}")
+            return []
 
     # Gate: only show plans if agency is on a paid plan
     if owner_id and not _is_agency_paid(owner_id):
