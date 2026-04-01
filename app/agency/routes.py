@@ -476,8 +476,8 @@ async def list_public_plans(domain: str = None, agency_id: str = None):
     else:
         owner_id = None
         
-    if not target_agency_id:
-        # 🟢 Fallback: Serve Platform Plans from plans.json if no agency is found
+    if not target_agency_id or target_agency_id == "platform":
+        # 🟢 Fallback: Serve Platform Plans from plans.json if no agency is found or explicitly requested
         try:
             from app.payments.stripe_service import load_plans
             platform_plans = load_plans()
@@ -563,7 +563,7 @@ async def list_public_topups(domain: str = None, agency_id: str = None):
     else:
         owner_id = None
         
-    if not target_agency_id:
+    if not target_agency_id or target_agency_id == "platform":
         return []
 
     # Gate: only show topups if agency is on a paid plan
