@@ -355,6 +355,8 @@ async def login_user(login_data: LoginRequest) -> Dict[str, Any]:
             "name": db_user.get("name"),
             "approved": db_user.get("approved", True),
             "user_type": db_user.get("user_type"),
+            "agency_id": db_user.get("agency_id"),
+            "plan_id": db_user.get("plan_id"),
             "created_at": db_user.get("created_at"),
             "access_token": access_token,
             "refresh_token": refresh_token
