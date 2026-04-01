@@ -80,7 +80,18 @@ async def get_public_config(domain: str = None, agency_id: str = None):
         raise HTTPException(status_code=400, detail="Domain or Agency ID required")
         
     if not res.data:
-        return None # Return None if not a white-label domain
+        # 🟢 Fallback: Return a default "Snobbots" configuration for the main platform 
+        # or if no matching agency is found (main site orientation).
+        return {
+            "id": "platform",
+            "name": "Snobbots",
+            "company_name": "Snobbots",
+            "custom_domain": None,
+            "logo_url": "https://snobbots.com/logo.png", # Fallback logo
+            "primary_color": "#2563EB",
+            "secondary_color": "#7C3AED",
+            "branding_settings": {}
+        }
         
     return res.data[0]
 

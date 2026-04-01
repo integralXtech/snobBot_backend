@@ -1245,6 +1245,62 @@ async def subscribe_to_agency_plan(
     """
     supabase = get_admin_supabase_client()
     
+    # 🟢 Fallback: Handle Standard Platform Plan if agency_id is "platform"
+    if agency_id == "platform":
+        from app.core.config import settings
+        plan = await get_plan_by_id(plan_id)
+        if not plan:
+            raise ValueError(f"Platform plan '{plan_id}' not found.")
+        
+        price_id = plan["stripe_price_id_live"] if settings.is_production else plan["stripe_price_id_test"]
+        if not price_id:
+            # Fallback to creating a session with price_data if price_id is missing (one-time logic)
+            price_data = {
+                "currency": plan.get("currency", "usd"),
+                "product_data": {
+                    "name": plan["name"],
+                    "description": "\n".join(plan.get("features", [])),
+                },
+                "unit_amount": int(plan["price"] * 100),
+            }
+            if plan.get("interval") != "one-time":
+                price_data["recurring"] = {"interval": plan.get("interval", "month")}
+        else:
+            price_data = None
+
+        customer_id = await get_or_create_customer(user_id, email)
+        base_url = origin or "https://snobbots-frontend.vercel.app"
+        success_url = f"{base_url}/payment-success?session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{base_url}/plans-and-upgrade"
+
+        session_kwargs = {
+            "payment_method_types": ["card"],
+            "line_items": [{"price": price_id, "quantity": 1}] if price_id else [{"price_data": price_data, "quantity": 1}],
+            "mode": "subscription" if plan.get("interval") != "one-time" else "payment",
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+            "customer": customer_id,
+            "metadata": {
+                "user_id": user_id,
+                "plan_id": plan_id,
+                "type": "platform_subscription_fallback"
+            },
+            "allow_promotion_codes": True
+        }
+        
+        session = stripe.checkout.Session.create(**session_kwargs)
+        
+        return {
+            "status": "pending",
+            "checkout_url": session.url,
+            "session_id": session.id,
+            "plan_id": plan_id,
+            "plan_name": plan["name"],
+            "amount": plan["price"],
+            "currency": plan.get("currency", "usd"),
+            "agency_id": "platform"
+        }
+
     # 1. Get Agency Connect ID
     agency_res = supabase.table("agencies").select("stripe_connect_id").eq("id", agency_id).execute()
     if not agency_res.data or not agency_res.data[0]["stripe_connect_id"]:
