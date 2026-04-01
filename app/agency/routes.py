@@ -70,14 +70,15 @@ async def get_public_config(domain: str = None, agency_id: str = None):
     supabase = get_admin_supabase_client()
     query = supabase.table("agencies").select("id, name, company_name, logo_url, primary_color, secondary_color, branding_settings")
     
-    if agency_id:
+    if agency_id and agency_id != "platform":
         res = query.eq("id", agency_id).execute()
     elif domain:
         # Handle cases where domain might have port like localhost:5173
         clean_domain = domain.split(":")[0]
         res = query.eq("custom_domain", clean_domain).execute()
     else:
-        raise HTTPException(status_code=400, detail="Domain or Agency ID required")
+        # If agency_id is "platform" or missing, we treat as no data to trigger fallback
+        res = type('obj', (object,), {'data': []})
         
     if not res.data:
         # 🟢 Fallback: Return a default "Snobbots" configuration for the main platform 
@@ -469,7 +470,7 @@ async def list_public_plans(domain: str = None, agency_id: str = None):
             owner_id = res.data[0].get("owner_id")
         else:
             owner_id = None
-    elif target_agency_id:
+    elif target_agency_id and target_agency_id != "platform":
         res = supabase.table("agencies").select("owner_id").eq("id", target_agency_id).execute()
         owner_id = res.data[0].get("owner_id") if res.data else None
     else:
@@ -556,9 +557,11 @@ async def list_public_topups(domain: str = None, agency_id: str = None):
         if res.data:
             target_agency_id = res.data[0]["id"]
             owner_id = res.data[0].get("owner_id")
-    elif target_agency_id:
+    elif target_agency_id and target_agency_id != "platform":
         res = supabase.table("agencies").select("owner_id").eq("id", target_agency_id).execute()
         owner_id = res.data[0].get("owner_id") if res.data else None
+    else:
+        owner_id = None
         
     if not target_agency_id:
         return []
