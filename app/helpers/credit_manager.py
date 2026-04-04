@@ -50,6 +50,10 @@ class CreditManager:
         total = balances.get(f"{col_base}_total", 0)
         used = balances.get(f"{col_base}_used", 0)
 
+        # Robustly handle NULLs from the database
+        total = total if total is not None else 0
+        used = used if used is not None else 0
+
         if (total - used) >= amount:
             return True, "Sufficient credits"
         
@@ -94,6 +98,7 @@ class CreditManager:
             return False, "No balance record."
             
         allowed = balances.get("chatbot_count_allowed", 0)
+        allowed = allowed if allowed is not None else 0
         
         # Count current bots
         bots_res = supabase.table("chatbot_configs").select("id", count="exact").eq("user_id", user_id).execute()

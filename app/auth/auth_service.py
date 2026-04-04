@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 async def ensure_user_in_database(user_data: Dict[str, Any]) -> Dict[str, Any]:
+    # Sanitize platform value
+    if user_data.get("agency_id") == "platform":
+        user_data["agency_id"] = None
+        if user_data.get("user_type") == "customer":
+            user_data["user_type"] = "user"
+
     supabase = get_admin_supabase_client()
     try:
         response = (
@@ -144,6 +150,12 @@ async def ensure_user_in_database(user_data: Dict[str, Any]) -> Dict[str, Any]:
 
 async def register_user(register_data: RegisterRequest) -> Dict[str, Any]:
     try:
+        # Sanitize platform value
+        if register_data.agency_id == "platform":
+            register_data.agency_id = None
+            if register_data.user_type == "customer":
+                register_data.user_type = "user"
+
         logger.info(f"Registering user: {register_data.email}, User Type: {register_data.user_type}")
         supabase_admin = get_admin_supabase_client()
         
